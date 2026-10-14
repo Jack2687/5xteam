@@ -59,6 +59,9 @@ func (s *Server) proAccountListWithCards(items []model.MailAccountProfile) ([]pr
 		return nil, err
 	}
 	for _, item := range items {
+		if !proCostBindingMatches(item, config) {
+			item.ClearProCostSnapshot()
+		}
 		row := proAccountListItem{MailAccountProfile: item, StageProgress: item.ProStages()}
 		row.FinancialCases = byEmail[strings.ToLower(item.Email)]
 		if row.FinancialCases == nil {
@@ -978,6 +981,9 @@ func (s *Server) performProQuota(ctx context.Context, email string, auto bool) (
 	}()
 	_, _ = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
 		p.QuotaStatus = "running"
+		if !proCostBindingMatches(*p, v) {
+			p.ClearProCostSnapshot()
+		}
 		if proTransferNeedsConfirmation(*p) {
 			p.TransferStatus = "unknown"
 		} else {
@@ -1004,7 +1010,30 @@ func (s *Server) performProQuota(ctx context.Context, email string, auto bool) (
 			return profile, errors.New("Sub2 账号 ID 不存在")
 		}
 		var quota sub2.QuotaUsage
-		quota, err = s.sub2.QueryQuota(ctx, v.Sub2, subPassword, profile.Sub2AccountID)
+		var costs sub2.AccountCosts
+		var costErr error
+		var queries sync.WaitGroup
+		queries.Add(2)
+		go func() {
+			defer queries.Done()
+			quota, err = s.sub2.QueryQuota(ctx, v.Sub2, subPassword, profile.Sub2AccountID)
+		}()
+		go func() {
+			defer queries.Done()
+			costs, costErr = s.sub2.QueryTotalCosts(ctx, v.Sub2, subPassword, profile.Sub2AccountID)
+		}()
+		queries.Wait()
+		// Cost is advisory and independent of the 5h/7d quota result.
+		if costErr == nil {
+			var saved model.MailAccountProfile
+			saved, costErr = s.saveProCostSnapshot(profile, v, costs)
+			if costErr == nil {
+				profile = saved
+			}
+		}
+		if costErr != nil {
+			s.auditProEvent(profile, "cost", "failed", "sub2", "Pro 消耗额度更新失败，保留上次成功数据", map[string]any{"error": costErr.Error()})
+		}
 		if err == nil {
 			five, seven = quota.Windows()
 		}

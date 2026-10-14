@@ -76,6 +76,7 @@ type Server struct {
 	gptpayMonitorClosed       bool
 	proAutoMu                 sync.Mutex
 	proScheduleMu             sync.Mutex
+	proCardAdmissionMu        sync.Mutex
 	proAutoWG                 sync.WaitGroup
 	proAutoJobs               map[string]context.CancelFunc
 	proAutoClosed             bool

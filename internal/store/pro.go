@@ -209,8 +209,12 @@ func (s *Store) UpdateProAccount(email string, mutate func(*model.MailAccountPro
 	}
 	wasConfirmed := p.TransferStatus == "completed" && p.ProMergeConfirmedSource != ""
 	wasRemoved := p.RemoveStatus == "completed" || p.RemoveStatus == "team_removed"
+	previousProvider, previousSub2ID := p.PushProvider, p.Sub2AccountID
 	if mutate != nil {
 		mutate(&p)
+	}
+	if p.PushProvider != previousProvider || p.Sub2AccountID != previousSub2ID || p.VM2 != nil {
+		p.ClearProCostSnapshot()
 	}
 	p.UpdatedAt = time.Now()
 	p.ReconcileProAutoMerge(p.UpdatedAt)

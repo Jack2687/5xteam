@@ -168,25 +168,7 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 			writeAPI(w, 409, nil, "供应商、套餐、国家或点数配置已变化，请重新打开窗口")
 			return
 		}
-		if input.CardID != "" {
-			card, secret, err = s.store.GPTPayCard(input.CardID)
-			if err != nil || !card.Enabled {
-				writeAPI(w, 400, nil, "请选择已启用的银行卡")
-				return
-			}
-			if err = gptpay.ValidateCard(secret, time.Now()); err != nil {
-				writeAPI(w, 400, nil, err.Error())
-				return
-			}
-			if !card.Available {
-				if card.SingleActiveAccount && card.ActiveAccounts > 0 {
-					writeAPI(w, 409, nil, "EJH 银行卡正在被 "+card.ActiveEmail+" 占用（一卡同时一个号），请等待移出成功")
-					return
-				}
-				writeAPI(w, 409, nil, "银行卡没有剩余开通名额")
-				return
-			}
-		} else if !pro.EJHAutoOpen {
+		if input.CardID == "" && !pro.EJHAutoOpen {
 			writeAPI(w, 400, nil, "请选择银行卡，或启用 EJH 自动补卡")
 			return
 		}
@@ -201,9 +183,13 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, 409, nil, "账号正在执行其他操作")
 		return
 	}
-	if !resume && input.CardID == "" {
+	reserved := false
+	if !resume {
+		s.proAutoMu.Lock()
+		closed := s.proAutoClosed
+		s.proAutoMu.Unlock()
 		latest, _, checkErr := s.store.MailAccountCredential(email)
-		if checkErr != nil || latest.ProWorkflowRunning || latest.ProAuto.OrderID != "" || latest.SpaceMergedOnce || s.proAutomationRunning(email) || s.proLoginAlreadyRunning(email) {
+		if closed || checkErr != nil || latest.ProWorkflowRunning || latest.ProAuto.OrderID != "" || latest.SpaceMergedOnce || s.proAutomationRunning(email) || s.proLoginAlreadyRunning(email) {
 			lock.Unlock()
 			writeAPI(w, 409, nil, "账号已有任务或已开通，未购买新卡")
 			return
@@ -213,18 +199,19 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 			writeAPI(w, 409, nil, "账号已有未结束订单，未购买新卡")
 			return
 		}
-		card, err = s.ensureEJHCard(r.Context())
-		if err == nil {
-			card, secret, err = s.store.GPTPayCard(card.ID)
-		}
+		card, secret, err = s.reserveProStartCard(r.Context(), email, input.CardID, pro.EJHAutoOpen, r.Context().Value(proScheduledContextKey{}) == true)
 		if err != nil {
 			lock.Unlock()
 			writeAPI(w, 409, nil, err.Error())
 			return
 		}
+		reserved = true
 	}
 	s.proAutoMu.Lock()
 	if s.proAutoClosed || s.proAutoJobs[email] != nil || s.proLoginAlreadyRunning(email) {
+		if reserved {
+			_ = s.store.ReleaseProCard(email)
+		}
 		s.proAutoMu.Unlock()
 		lock.Unlock()
 		writeAPI(w, 409, nil, "账号已有登录或自动任务，或服务正在停止，请稍后重试")
@@ -240,11 +227,6 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil && !resume && p.ProAuto.OrderID != "" {
 		err = errors.New("已存在开通订单，请查询原订单")
-	}
-	reserved := false
-	if err == nil && !resume {
-		err = s.store.ReserveProCard(email, card.ID, r.Context().Value(proScheduledContextKey{}) == true)
-		reserved = err == nil
 	}
 	if err == nil {
 		p, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {

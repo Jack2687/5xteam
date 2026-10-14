@@ -143,8 +143,9 @@ onMounted(checkAuth)
   <div v-else-if="authenticated" class="app-shell">
     <header class="topbar">
       <div class="topbar-inner">
-        <button class="brand" type="button" aria-label="返回任务台" @click="selectTab('full')"><span class="brand-mark"><ArrowLeftRight :size="18" /></span><span><strong>Space Console</strong><small>Team Automation</small></span></button>
-        <nav class="desktop-nav" aria-label="主导航"><button v-for="item in nav" :key="item.id" type="button" :class="{ active: isNavActive(item) }" @click="selectTab(item.id === 'space-merge' ? 'full' : item.id)"><component :is="item.icon" :size="15" />{{ item.label }}</button></nav>
+        <button class="brand" type="button" aria-label="返回任务台" @click="selectTab('full')"><span class="brand-mark"><ArrowLeftRight :size="18" /></span><span><strong>Space Console</strong><small>WORKSPACE</small></span></button>
+        <nav class="desktop-nav" aria-label="主导航"><span class="nav-section-label">工作台</span><template v-for="item in nav" :key="item.id"><span v-if="item.id === 'admins'" class="nav-section-label nav-section-divider">资源与系统</span><button type="button" :class="{ active: isNavActive(item) }" :aria-current="isNavActive(item) ? 'page' : undefined" @click="selectTab(item.id === 'space-merge' ? 'full' : item.id)"><component :is="item.icon" :size="16" />{{ item.label }}</button></template></nav>
+        <div class="sidebar-footer"><span class="sidebar-avatar">SC</span><div><strong>Space 工作空间</strong><small>账号 · 空间 · 资源</small></div></div>
       </div>
       <div class="context-bar"><div class="context-inner"><span><component :is="activeNav.icon" :size="14" />{{ activeNav.group }}</span><ChevronDown :size="13" /><strong>{{ activeNav.label }}</strong><i></i><small>{{ anyActive ? '有任务正在执行' : `运行地址 ${runtimeHost}` }}</small></div></div>
       <nav v-if="mobileOpen" class="mobile-nav" aria-label="移动端导航"><button v-for="item in nav" :key="item.id" type="button" :class="{ active: isNavActive(item) }" @click="selectTab(item.id === 'space-merge' ? 'full' : item.id)"><component :is="item.icon" :size="17" /><span>{{ item.label }}</span></button></nav>

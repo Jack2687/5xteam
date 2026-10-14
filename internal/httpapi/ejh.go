@@ -711,7 +711,7 @@ func (s *Server) ensureEJHCard(ctx context.Context) (gptpay.Card, error) {
 		}
 		if o.Automatic && o.Status == "completed" && o.CardID != "" {
 			prior, _, err := s.store.GPTPayCard(o.CardID)
-			if err != nil || (prior.OpenedAccounts == 0 && prior.PendingAccounts == 0 && !prior.Available) {
+			if err != nil || (prior.OpenedAccounts == 0 && prior.PendingAccounts == 0 && prior.ActiveAccounts == 0 && !prior.Available) {
 				return gptpay.Card{}, fmt.Errorf("已有自动开卡尚未使用且不可用，请先核实该卡，暂停自动补卡")
 			}
 		}
