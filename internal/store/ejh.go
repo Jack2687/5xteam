@@ -336,7 +336,7 @@ func (s *Store) EJHSaveTrade(cardID string, t ejh.Trade) error {
 			return e
 		}
 		v.OrderID, v.OriginalTradeID, v.Confirmed, v.Amount, v.Currency, v.Evidence, v.Source, v.ConfirmedAt = old.OrderID, old.OriginalTradeID, old.Confirmed, old.Amount, old.Currency, old.Evidence, old.Source, old.ConfirmedAt
-		if old.Confirmed && (old.Trade.Status != t.Status || old.Trade.RefundAmount != t.RefundAmount || old.Trade.TradeAmount != t.TradeAmount || old.Trade.BillAmount != t.BillAmount || old.Trade.TradeCurrency != t.TradeCurrency || old.Trade.BillCurrency != t.BillCurrency || old.Trade.RefundTag != t.RefundTag) {
+		if old.Confirmed && (old.Trade.Status != t.Status || old.Trade.CardAmount != t.CardAmount || old.Trade.CardCurrency != t.CardCurrency || old.Trade.RefundAmount != t.RefundAmount || old.Trade.TradeAmount != t.TradeAmount || old.Trade.BillAmount != t.BillAmount || old.Trade.TradeCurrency != t.TradeCurrency || old.Trade.BillCurrency != t.BillCurrency || old.Trade.RefundTag != t.RefundTag) {
 			changedFrom = &old
 			v.Confirmed = false
 			v.ConfirmedAt = nil

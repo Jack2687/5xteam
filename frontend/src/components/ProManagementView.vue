@@ -33,7 +33,7 @@ const props = defineProps({ accounts: { type: Array, default: () => [] }, adminA
 const emit = defineEmits(['reload', 'open-ejh-card'])
 function openActivationCard(account) { const entry=ejhCardEntry(account); if(entry) emit('open-ejh-card',entry) }
 const activeTab = ref('accounts')
-const spaceFilter = ref('all')
+const spaceFilter = ref('in_progress')
 const query = ref('')
 const page = ref(1)
 const pageSize = ref(props.defaultPageSize)

@@ -44,6 +44,7 @@ func (s *Server) ejhConfig() (ejh.Settings, string, error) {
 	return c, k, nil
 }
 func (s *Server) ejhRoutes(m *http.ServeMux) {
+	m.HandleFunc("POST /api/ejh/cards/{id}/trades", s.queryEJHCardTrades)
 	m.HandleFunc("GET /api/ejh/occupancy/{id}", s.getEJHOccupancyOrder)
 	m.HandleFunc("POST /api/ejh/occupancy/{id}/resolve", s.resolveEJHOccupancy)
 	m.HandleFunc("GET /api/ejh/settings", s.getEJHSettings)
@@ -734,8 +735,17 @@ func (s *Server) ensureEJHCard(ctx context.Context, admissionChecks ...func() er
 		}
 		if o.Automatic && o.Status == "completed" && o.CardID != "" {
 			prior, _, err := s.store.GPTPayCard(o.CardID)
-			if err != nil || (prior.OpenedAccounts == 0 && prior.PendingAccounts == 0 && prior.ActiveAccounts == 0 && !prior.Available) {
-				return gptpay.Card{}, fmt.Errorf("已有自动开卡尚未使用且不可用，请先核实该卡，暂停自动补卡")
+			if err != nil {
+				return gptpay.Card{}, fmt.Errorf("自动开卡记录对应的银行卡 %s 无法读取，请先核实该卡，暂停自动补卡", o.CardID)
+			}
+			closed := prior.Source == "ejh" && prior.IssuerStatus == "2"
+			if closed && (prior.IssuerLocked || prior.PendingAccounts > 0 || prior.ActiveAccounts > 0 || len(prior.Occupants) > 0) {
+				return gptpay.Card{}, fmt.Errorf("EJH 卡尾号 %s 已销卡，但仍有未决付款、账号占用或卡片资料待核实，暂停自动补卡", prior.Last4)
+			}
+			// A confirmed closed card with no outstanding work is settled history.
+			// It must still reach the daily count and amount accounting below.
+			if !closed && prior.OpenedAccounts == 0 && prior.PendingAccounts == 0 && prior.ActiveAccounts == 0 && !prior.Available {
+				return gptpay.Card{}, fmt.Errorf("EJH 卡尾号 %s 尚无成功开通记录且当前不可用，请先核实该卡，暂停自动补卡", prior.Last4)
 			}
 		}
 		if o.Method == "open" && (o.Status == "submitting" || o.Status == "unknown" || o.Status == "import_pending") {

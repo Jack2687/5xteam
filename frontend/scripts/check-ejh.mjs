@@ -218,3 +218,4 @@ for(const status of ['completed','unknown']) {
  assert.equal(f.ctx.progress.value.success,status==='completed'?2:0)
 }
 console.log('Passed: newest-first order, cancellation selection guards, progress, frozen opening payload, uncertainty stop, disposal and batch cancellation')
+import './check-ejh-money-trades.mjs'
