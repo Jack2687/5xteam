@@ -7,6 +7,9 @@ import (
 )
 
 type Config struct {
+	NoRestockEnabled         bool   `json:"no_restock_enabled"`
+	NoRestockStart           string `json:"no_restock_start"`
+	NoRestockEnd             string `json:"no_restock_end"`
 	ForceMergeEnabled        bool   `json:"force_merge_enabled"`
 	ForceMergeMinutes        int    `json:"force_merge_minutes"`
 	MinNewUsePercent         int    `json:"min_new_use_percent"`
@@ -51,9 +54,19 @@ type Config struct {
 }
 
 func DefaultConfig() Config {
-	return Config{ForceMergeMinutes: 15, FaultPercent: 50, Version: 1, Mode: "observe", TimeEnabled: true, TriggerMinutes: 10, TargetMinutes: 15, Early: true, ConcurrencyEnabled: true, TriggerPercent: 85, TargetPercent: 75, Confirmations: 2, EmergencyQueue: 3, MinBatch: 3, MaxBatch: 5, AllowSmall: true, MaxInflight: 6, CheckSeconds: 5, QuotaSeconds: 60, CooldownSeconds: 60, EmergencyCooldownSeconds: 20, HourLimit: 20, DayLimit: 100, PoolLimit: 100, FailureLimit: 3, FreshSeconds: 20, QuotaCoverage: 80, LeadMinutes: 5, MarginMinutes: 1, ForecastMinutes: 60, LeadSamples: 10, RetentionDays: 7}
+	return Config{NoRestockStart: "00:00", NoRestockEnd: "07:00", ForceMergeMinutes: 15, FaultPercent: 50, Version: 1, Mode: "observe", TimeEnabled: true, TriggerMinutes: 10, TargetMinutes: 15, Early: true, ConcurrencyEnabled: true, TriggerPercent: 85, TargetPercent: 75, Confirmations: 2, EmergencyQueue: 3, MinBatch: 3, MaxBatch: 5, AllowSmall: true, MaxInflight: 6, CheckSeconds: 5, QuotaSeconds: 60, CooldownSeconds: 60, EmergencyCooldownSeconds: 20, HourLimit: 20, DayLimit: 100, PoolLimit: 100, FailureLimit: 3, FreshSeconds: 20, QuotaCoverage: 80, LeadMinutes: 5, MarginMinutes: 1, ForecastMinutes: 60, LeadSamples: 10, RetentionDays: 7}
 }
 func (c Config) Validate() error {
+	if c.NoRestockEnabled {
+		start, startOK := dailyMinute(c.NoRestockStart)
+		end, endOK := dailyMinute(c.NoRestockEnd)
+		if !startOK || !endOK {
+			return errors.New("每日禁补开始和结束时间必须为 HH:mm（00:00～23:59）")
+		}
+		if start == end {
+			return errors.New("每日禁补开始和结束时间不能相同；全天停止请关闭自动补货总开关")
+		}
+	}
 	if c.ForceMergeMinutes < 1 || c.ForceMergeMinutes > 525600 {
 		return errors.New("提前补货平均剩余时间阈值应为 1～525600 分钟")
 	}
@@ -143,7 +156,7 @@ type Snapshot struct {
 	Accounts        []Account `json:"accounts"`
 }
 type Task struct {
- ManagedExternally bool `json:"managed_externally,omitempty"`
+	ManagedExternally bool                 `json:"managed_externally,omitempty"`
 	ForceMergeSource  string               `json:"force_merge_source,omitempty"`
 	EmptyGroupStartup bool                 `json:"empty_group_startup,omitempty"`
 	Plan              string               `json:"plan"`
@@ -184,6 +197,7 @@ type Limits struct {
 	LastBatch *time.Time `json:"last_batch,omitempty"`
 }
 type Decision struct {
+	NoRestockActive bool            `json:"no_restock_active"`
 	ForceMerge      ForceMergeStats `json:"force_merge"`
 	ForceMergeNeed  int             `json:"force_merge_need"`
 	DemandKnown     bool            `json:"demand_known"`

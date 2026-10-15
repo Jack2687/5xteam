@@ -93,7 +93,9 @@ func (s *Server) getProRestock(w http.ResponseWriter, r *http.Request) {
 			d = records[0]
 		}
 	}
-	writeAPI(w, 200, map[string]any{"config": c, "inherited": p, "snapshot": snap, "decision": d, "tasks": tasks, "limits": limits, "server_time": time.Now()}, "")
+	now := time.Now()
+	noRestockReason := c.NoRestockReason(now)
+	writeAPI(w, 200, map[string]any{"config": c, "inherited": p, "snapshot": snap, "decision": d, "tasks": tasks, "limits": limits, "server_time": now, "no_restock_active": noRestockReason != "", "no_restock_reason": noRestockReason}, "")
 }
 func (s *Server) saveProRestockConfig(w http.ResponseWriter, r *http.Request) {
 	c := restock.DefaultConfig()

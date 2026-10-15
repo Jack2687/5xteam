@@ -44,8 +44,19 @@ func Pressure(c Config, s Snapshot) bool {
 	return queue > 0 || (capacity > 0 && float64(used)*100 >= float64(capacity*c.TriggerPercent))
 }
 
-func Evaluate(c Config, s Snapshot, tasks []Task, limits Limits, confirmations, newSlots int, lead float64, now time.Time) Decision {
-	d := Decision{At: now, Version: c.Version, Snapshot: s, Config: c, Limits: limits, Confirmations: confirmations, LeadMinutes: lead, TriggerMinutes: float64(c.TriggerMinutes), TargetMinutes: float64(c.TargetMinutes), Warnings: []string{}}
+func Evaluate(c Config, s Snapshot, tasks []Task, limits Limits, confirmations, newSlots int, lead float64, now time.Time) (d Decision) {
+	d = Decision{At: now, Version: c.Version, Snapshot: s, Config: c, Limits: limits, Confirmations: confirmations, LeadMinutes: lead, TriggerMinutes: float64(c.TriggerMinutes), TargetMinutes: float64(c.TargetMinutes), Warnings: []string{}}
+	// Keep forecasts, demand and collection errors visible while suppressing
+	// every trigger, including startup, replacement and emergency demand.
+	defer func() {
+		if reason := c.NoRestockReason(now); reason != "" {
+			if !d.DemandKnown && d.Reason != "" {
+				d.Warnings = append(d.Warnings, d.Reason)
+			}
+			d.NoRestockActive = true
+			d.Suggested, d.Reason = 0, reason
+		}
+	}()
 	if c.Early {
 		d.TriggerMinutes = math.Max(d.TriggerMinutes, lead+float64(c.MarginMinutes))
 		d.TargetMinutes = math.Max(d.TargetMinutes, d.TriggerMinutes+1)

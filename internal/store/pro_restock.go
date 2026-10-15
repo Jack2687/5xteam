@@ -94,6 +94,13 @@ func (s *Store) SaveProRestockTask(t restock.Task) error {
 func (s *Store) ClaimProRestockDispatch(t restock.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	c, err := readRestockConfig(s.db)
+	if err != nil {
+		return err
+	}
+	if reason := c.NoRestockReason(time.Now()); reason != "" {
+		return errors.New(reason)
+	}
 	result, err := s.db.Exec(`UPDATE pro_restock_tasks SET status=?,payload=? WHERE id=? AND status='reserved' AND EXISTS(SELECT 1 FROM pro_restock_config WHERE id=1 AND json_extract(payload,'$.version')=? AND json_extract(payload,'$.enabled')=1 AND json_extract(payload,'$.mode')='auto')`, t.Status, mustJSON(t), t.ID, t.Version)
 	if err != nil {
 		return err
@@ -165,6 +172,11 @@ func (s *Store) ReserveProRestock(d restock.Decision, target string, existingInf
 	}
 	if !c.Enabled || c.Mode != "auto" || c.Version != d.Version {
 		return nil, errors.New("配置版本或运行模式已变化")
+	}
+	// Recheck wall time after acquiring the transaction; the evaluation may
+	// have completed just before the no-restock interval started.
+	if reason := c.NoRestockReason(time.Now()); reason != "" {
+		return nil, errors.New(reason)
 	}
 	l, err := restockLimits(tx, d.At)
 	if err != nil {

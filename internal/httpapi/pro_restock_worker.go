@@ -367,6 +367,12 @@ func (s *Server) tickProRestock(ctx context.Context, force bool) error {
 	keepReserved := gross.Suggested
 	startupPending := false
 	for _, t := range tasks {
+		if t.Status == "reserved" && d.NoRestockActive {
+			if err := s.store.CancelProRestock(t, "进入每日禁补时段，撤销未启动预留；结束后按新快照重新评估"); err != nil {
+				return err
+			}
+			continue
+		}
 		excess := t.Status == "reserved" && gross.DemandKnown && gross.Suggested > 0 && keepReserved <= 0
 		if t.Status == "reserved" && (!c.Enabled || c.Mode != "auto" || t.Version != c.Version || t.Binding != snap.Binding || t.GroupID != snap.GroupID || (snap.Valid && t.Plan != snap.NewPlan) || (!t.EmptyGroupStartup && t.ForceMergeSource == "" && (drop || excess)) || (t.ForceMergeSource != "" && !c.ForceMergeEnabled)) {
 			_ = s.store.CancelProRestock(t, "配置变化、暂停或新快照确认需求回落")
@@ -393,7 +399,7 @@ func (s *Server) tickProRestock(ctx context.Context, force bool) error {
 	if startupPending && gross.DemandKnown && gross.Suggested == 0 {
 		d.Reason += "；启动或提前接替批次仍有预留，按工作并发继续执行"
 	}
-	if c.Enabled && c.Mode == "auto" && snap.Valid && snap.LoadValid && (gross.Suggested > 0 || (startupPending && gross.DemandKnown)) && limits.Failures < c.FailureLimit && ctx.Err() == nil {
+	if c.Enabled && c.Mode == "auto" && !d.NoRestockActive && snap.Valid && snap.LoadValid && (gross.Suggested > 0 || (startupPending && gross.DemandKnown)) && limits.Failures < c.FailureLimit && ctx.Err() == nil {
 		s.dispatchProRestock(ctx, c, p, snap, gross.Suggested == 0)
 	}
 	s.proRestock.mu.Lock()
@@ -466,7 +472,7 @@ func (s *Server) dispatchProRestock(ctx context.Context, c restock.Config, p mod
 			card = cards[0].ID
 		}
 		now := time.Now()
-		if !restockSnapshotFresh(c, snap, now) {
+		if !restockSnapshotFresh(c, snap, now) || c.NoRestockReason(now) != "" {
 			return
 		}
 		t.Status = "submitting"

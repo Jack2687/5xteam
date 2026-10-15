@@ -15,6 +15,7 @@ const d=computed(()=>state.value?.decision||{}),snap=computed(()=>state.value?.s
 const active=computed(()=>tasks.value.filter(t=>!['ready','failed','cancelled'].includes(t.status))),filteredGroups=computed(()=>groups.value.filter(g=>g.name.toLowerCase().includes(search.value.toLowerCase())))
 const stale=computed(()=>!snap.value.at||clock.value+clockOffset.value-new Date(snap.value.at).getTime()>1000*(state.value?.config?.fresh_seconds||20))
 const monitorUnavailable=computed(()=>stale.value||!snap.value.valid||!snap.value.load_valid)
+const noRestockActive=computed(()=>!!state.value?.no_restock_active)
 const liveDecision=computed(()=>({...d.value,snapshot:snap.value,config:d.value.config||state.value?.config}))
 const forecastReport=computed(()=>forecastDetails(liveDecision.value,clock.value+clockOffset.value))
 function acceptState(data){state.value=data;clock.value=Date.now();const at=Date.parse(data.server_time);if(Number.isFinite(at))clockOffset.value=at-clock.value}
@@ -57,6 +58,8 @@ async function evaluate(){await action(async()=>{
   collectionError.value='本次采集未恢复，新增补货继续暂停：'+(data.snapshot?.error||'监控数据缺失或过期。')
  }else if(!data.config.enabled){
   notice.value='采集成功，已更新评估；新增仍处于手动暂停状态。'
+ }else if(data.no_restock_active){
+  notice.value='采集成功；'+data.no_restock_reason
  }else if(data.config.mode==='auto'){
   notice.value='采集成功，已恢复规则判断；满足补货条件和限制时才启动全自动 Pro。'
  }else{
@@ -64,7 +67,14 @@ async function evaluate(){await action(async()=>{
  }
  await loadRecords()
 })}
-async function save(){await action(async()=>{const c=await api('/api/pro-restock/config',{method:'PUT',body:form});if(disposed)return;state.value={...state.value,config:c};Object.assign(form,c);dirty.value=false;await refresh();notice.value='配置 v'+c.version+' 已保存。'})}
+async function save(){await action(async()=>{
+ if(form.no_restock_enabled){
+  const validTime=/^([01]\d|2[0-3]):[0-5]\d$/
+  if(!validTime.test(form.no_restock_start)||!validTime.test(form.no_restock_end))throw new Error('每日禁补开始和结束时间必须为 HH:mm（00:00～23:59）。')
+  if(form.no_restock_start===form.no_restock_end)throw new Error('每日禁补开始和结束时间不能相同；全天停止请关闭自动补货总开关。')
+ }
+ const c=await api('/api/pro-restock/config',{method:'PUT',body:form});if(disposed)return;state.value={...state.value,config:c};Object.assign(form,c);dirty.value=false;await refresh();notice.value='配置 v'+c.version+' 已保存。'
+})}
 async function pause(){await action(async()=>{const c=await api('/api/pro-restock/config',{method:'PUT',body:{...state.value.config,enabled:!state.value.config.enabled}});if(disposed)return;state.value={...state.value,config:c};Object.assign(form,c);dirty.value=false;await refresh(true);notice.value=c.enabled?'后台监控已启用':'新增已暂停，已提交任务继续跟踪。'})}
 async function loadGroups(){await action(async()=>{groups.value=await api('/api/pro-restock/groups');notice.value='已读取 Pro 推送连接的 Sub2 分组。'})}
 async function resetBreaker(){await action(async()=>{const data=await api('/api/pro-restock/reset-breaker',{method:'POST'});if(disposed)return;acceptState(data);notice.value='熔断已重置，原订单和在途保留。'})}
@@ -82,7 +92,8 @@ onUnmounted(()=>{disposed=true;stateRevision++;clearInterval(timer);clearInterva
  <p v-if="error||collectionError" role="alert" class="notice danger">{{error||collectionError}}</p><p v-if="notice" role="status" class="notice">{{notice}}</p>
  <p v-if="!state" class="empty">正在读取补货状态…</p>
  <template v-else>
- <div class="runbar"><span><b>{{!state.config.enabled?'新增已手动暂停':monitorUnavailable?'采集异常 · 新增暂停 / 自动重试中':'后台监控已启用'}}</b> · {{state.config.mode==='auto'?'自动执行':'观察模式'}} · 配置 v{{state.config.version}}</span><span>监控组 #{{state.config.group_id||'未选择'}} · 快照 {{fmt(snap.at)}}</span></div>
+ <div class="runbar"><span><b>{{!state.config.enabled?'新增已手动暂停':noRestockActive?'每日禁补时段 · 暂停新增':monitorUnavailable?'采集异常 · 新增暂停 / 自动重试中':'后台监控已启用'}}</b> · {{state.config.mode==='auto'?'自动执行':'观察模式'}} · 配置 v{{state.config.version}}</span><span>监控组 #{{state.config.group_id||'未选择'}} · 快照 {{fmt(snap.at)}}</span></div>
+ <div v-if="state.config.no_restock_enabled" class="notice" :class="{warn:noRestockActive}" role="status"><b>每日禁补 {{state.config.no_restock_start}}～{{state.config.no_restock_end}}（北京时间 / Asia/Shanghai）{{state.config.no_restock_start>state.config.no_restock_end?' · 跨午夜':''}}</b><p>{{noRestockActive?state.no_restock_reason:'当前不在禁补时段，按正常规则评估。'}} 到结束时间后的下一轮检查自动重新评估，仍受批量、冷却和预算限制；监控与已启动流程继续运行。</p></div>
  <p v-if="inherited.scheduled_enabled" class="notice warn">原定时任务仍已启用，会按原固定数量策略开通。同池同时使用时，新补货不能阻止原任务补号。</p>
  <section v-if="tab==='dashboard'">
   <div v-if="monitorUnavailable" class="notice warn">{{snap.error||'尚无有效快照，请先选择监控分组并检查连接。'}}<span v-if="stale&&snap.accounts?.length"> 当前显示历史数据，已过有效期。</span><p v-if="state.config.enabled">新增补货暂时停止，每轮采集结束后等待 {{state.config.check_seconds}} 秒重试；成功后自动恢复判断。也可点击“立即重试”。已提交的全自动 Pro 流程继续执行。</p><p v-else>可点击“立即重试”检查连接和数据；成功后仍保留手动暂停状态。</p></div>
@@ -100,6 +111,7 @@ onUnmounted(()=>{disposed=true;stateRevision++;clearInterval(timer);clearInterva
  <section v-if="tab==='settings'"><form @submit.prevent="save" @input="dirty=true"><div class="two-grid"><article class="panel"><h2>基本设置</h2><label class="check"><input v-model="form.enabled" type="checkbox">启用 Pro 自动补货</label><label>运行模式<select v-model="form.mode"><option value="observe">观察模式 — 只记录建议</option><option value="auto">自动执行 — 达标后启动全自动 Pro</option></select></label><label>唯一监控分组<input v-model="search" type="search" placeholder="搜索 Sub2 分组"><select aria-label="唯一监控分组" v-model.number="form.group_id"><option :value="0">请选择分组</option><option v-if="form.group_id&&!groups.some(g=>g.id===form.group_id)" :value="form.group_id">已保存分组 #{{form.group_id}}</option><option v-for="g in filteredGroups" :key="g.id" :value="g.id">{{g.name}} · #{{g.id}}</option></select></label><button type="button" :disabled="busy" @click="loadGroups">读取 / 刷新分组</button><p v-if="form.group_id&&!(inherited.sub2?.group_ids||[]).includes(form.group_id)" class="danger-text">该监控组不在当前推送目标中，无法启用。</p><p class="muted">保存启用配置前检查连接、分组和监控数据。仅选择一个监控组。</p></article>
  <article class="panel"><h2>继承 Pro 推送设置</h2><div class="line"><span>当前下游</span><b>{{inherited.provider}}</b></div><div class="line"><span>Sub2 地址</span><b>{{inherited.sub2?.url||'未配置'}}</b></div><div class="line"><span>认证</span><b>{{inherited.sub2?.password_present?'已保存':'未配置'}}</b></div><div class="line"><span>目标分组</span><b>{{inherited.sub2?.group_names?.join('、')||inherited.sub2?.group_ids?.join('、')||'未配置'}}</b></div><div class="line"><span>模型 / 代理 / 优先级</span><b>{{inherited.sub2?.models?.join('、')||'默认模型'}} / {{inherited.sub2?.proxy_ids?.join('、')||'默认'}} / {{inherited.sub2?.priority}}</b></div><div class="line"><span>单账号请求并发</span><b>{{inherited.sub2?.account_concurrency}}</b></div><div class="line"><span>开通工作并发</span><b>{{inherited.concurrency}}</b></div><div class="line"><span>原推送等待时限</span><b>{{inherited.force_merge_enabled?inherited.force_merge_minutes+' 分钟':'未启用强制时限'}}</b></div><p class="muted">以上值在 Pro 管理中设置，本页不保存第二套推送配置。已提交任务保留原连接。</p></article>
  <article v-for="section in sections" :key="section.title" class="panel"><h2>{{section.title}}</h2><p class="muted">{{section.text}}</p><ProForceMergeStatus v-if="section.forceMerge" :decision="d" :config="state.config" :unavailable="monitorUnavailable" :now="clock+clockOffset"/><div class="fields"><label v-for="field in section.fields" :key="field[0]" :class="{check:field[2]==='bool'}"><input v-if="field[2]==='bool'" v-model="form[field[0]]" type="checkbox">{{field[1]}}<input v-if="field[2]!=='bool'" v-model.number="form[field[0]]" type="number" :min="field[2]" :max="field[3]" step="1" required></label></div></article>
+ <article class="panel"><h2>每日禁补时段</h2><p class="muted">每天按北京时间（Asia/Shanghai）生效，支持跨午夜。包含开始时间，不包含结束时间。默认关闭。</p><label class="check"><input v-model="form.no_restock_enabled" type="checkbox">启用每日禁补时段</label><div class="fields"><label>禁补开始时间<input v-model="form.no_restock_start" type="time" step="60" :disabled="!form.no_restock_enabled" :required="form.no_restock_enabled"></label><label>禁补结束时间<input v-model="form.no_restock_end" type="time" step="60" :disabled="!form.no_restock_enabled" :required="form.no_restock_enabled"></label></div><p v-if="form.no_restock_enabled" class="notice">每天 {{form.no_restock_start||'待设置'}} 至 {{form.no_restock_start>form.no_restock_end?'次日 ':''}}{{form.no_restock_end||'待设置'}} 暂停新增补货。</p><p class="muted">禁补期间所有补货规则与“立即评估”均不启动新流程；撤销未启动的预留，已启动的登录、开通、推送和后续流程继续执行。结束后按最新监控数据重新判断，不积攒补货数量。仅影响 Pro 自动补货，原定时任务继续按原配置运行。</p></article>
  </div><details class="panel advanced"><summary>高级配置 · 成本、数据与到货保护</summary><div class="two-grid"><article v-for="section in advanced" :key="section.title"><h3>{{section.title}}</h3><p class="muted">{{section.text}}</p><div class="fields"><label v-for="field in section.fields" :key="field[0]">{{field[1]}}<input v-model.number="form[field[0]]" type="number" :min="field[2]" :max="field[3]" step="1" required></label></div></article></div><button type="button" :disabled="busy" @click="resetBreaker">处理故障后重置熔断</button></details><div class="savebar"><span>{{dirty?'有未保存修改':'参数由后台持久化保存'}}</span><button class="primary" :disabled="busy" type="submit">{{busy?'检查并保存…':'保存配置'}}</button></div></form></section>
  <section v-if="tab==='records'"><article class="panel"><div class="panel-head"><h2>补货决策与执行记录</h2><span class="badge">持久化记录 · 第 {{page}} 页</span></div><p class="muted">点击“查看”打开本轮详情，包含配置版本、快照、缺口与限制。</p><div class="tablewrap"><table><thead><tr><th>时间 / 配置</th><th>事件</th><th>结果</th><th>在途</th><th>原因</th><th>明细</th></tr></thead><tbody><tr v-for="r in records" :key="r.id"><td>{{fmt(r.at)}}<small>v{{r.version}}</small></td><td>补货决策</td><td>{{r.started?'已预留 '+r.started+' 个':'建议 '+r.suggested+' 个'}}</td><td>{{r.inflight}}</td><td>{{r.reason}}</td><td><button @click="showDetail(r)">查看</button></td></tr><tr v-if="!records.length"><td colspan="6" class="empty">暂无记录，启用观察或立即评估后显示</td></tr></tbody></table></div><div class="pagination"><button :disabled="page<=1||busy" @click="page--;action(loadRecords)">上一页</button><button :disabled="records.length<30||busy" @click="page++;action(loadRecords)">下一页</button></div></article></section>
  </template>
