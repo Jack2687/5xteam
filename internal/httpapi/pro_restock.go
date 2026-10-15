@@ -121,9 +121,14 @@ func (s *Server) collectProRestock(ctx context.Context, c restock.Config, p mode
 	now = time.Now()
 	snap.At = loads.At
 	snap.Valid = true
-	snap.LoadValid = loads.Quality != nil && loads.Quality.Complete && loads.Quality.Expected == len(accounts) && loads.Quality.Succeeded == len(accounts) && loads.Quality.Failed == 0 && len(loads.Account) == len(accounts)
+	snap.LoadValid = len(loads.Account) == len(accounts)
 	if !snap.LoadValid {
-		snap.Error = "Sub2 未提供完整采集质量证明；需支持 strict=true 和 quality 字段，当前仅观察"
+		snap.Error = "Sub2 账号列表与并发负载数量不一致，暂停新增并等待重新采集"
+	}
+	// Native Sub2 has no quality extension. Honor explicit failures when present.
+	if q := loads.Quality; q != nil && (!q.Complete || q.Expected != len(accounts) || q.Succeeded != len(accounts) || q.Failed != 0) {
+		snap.LoadValid = false
+		snap.Error = "Sub2 报告并发采集不完整，暂停新增并等待重新采集"
 	}
 	profiles := s.store.MailAccountsByManagementScope("pro")
 	byID := map[int64]model.MailAccountProfile{}
@@ -160,7 +165,7 @@ func (s *Server) collectProRestock(ctx context.Context, c restock.Config, p mode
 			v.Windows = nil
 		}
 		load, ok := loads.Account[a.ID]
-		if !ok || load.AccountID != a.ID || load.Used < 0 || load.Waiting < 0 || load.Known == nil || !*load.Known || load.Capacity != a.Concurrency {
+		if !ok || load.AccountID != a.ID || load.Used < 0 || load.Waiting < 0 || (load.Known != nil && !*load.Known) || load.Capacity != a.Concurrency {
 			snap.LoadValid = false
 			snap.Error = "账号成员、并发容量或采集质量不一致"
 		} else {

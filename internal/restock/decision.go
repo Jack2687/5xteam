@@ -56,10 +56,13 @@ func Evaluate(c Config, s Snapshot, tasks []Task, limits Limits, confirmations, 
 		d.Used += a.Used
 		d.Waiting += a.Waiting
 	}
-	timely := 0
+	timely, groupInflight := 0, 0
 	for _, t := range tasks {
 		if t.Active() {
 			d.Inflight++
+			if t.Binding == s.Binding && t.GroupID == s.GroupID {
+				groupInflight++
+			}
 			if t.Predictable() && t.Binding == s.Binding && t.GroupID == s.GroupID && !t.ETA.After(now.Add(time.Duration(lead*float64(time.Minute)))) {
 				timely++
 			}
@@ -153,6 +156,11 @@ func Evaluate(c Config, s Snapshot, tasks []Task, limits Limits, confirmations, 
 		}
 	}
 	d.ReserveNeed = max(0, c.Reserve-d.Usable-timely)
+	// An empty group has no consumption samples or pressure to confirm. All
+	// matching active intents count for deduplication, even without an ETA.
+	if len(s.Accounts) == 0 && c.EmptyGroupCount > 0 {
+		d.EmptyGroupNeed = max(0, c.EmptyGroupCount-groupInflight)
+	}
 	// This optional ordinary-purchase guard never overrides confirmed pressure
 	// or the explicitly configured reserve. Rates are trusted by forecast above.
 	if c.MinNewUsePercent > 0 && s.LifetimeMinutes > 0 && d.SupplyMinutes != nil && d.TimeNeed > 0 {
@@ -174,8 +182,11 @@ func Evaluate(c Config, s Snapshot, tasks []Task, limits Limits, confirmations, 
 			d.Warnings = append(d.Warnings, "按推送等待时限与最低预计使用比例限制普通补货；持续并发和最低备用仍独立生效")
 		}
 	}
-	need := max(d.TimeNeed, d.ConcurrencyNeed, d.ReserveNeed)
+	need := max(d.TimeNeed, d.ConcurrencyNeed, d.ReserveNeed, d.EmptyGroupNeed)
 	if need == 0 {
+		if len(s.Accounts) == 0 && c.EmptyGroupCount > 0 && groupInflight > 0 {
+			return block("空分组启动数量已由同组在途覆盖，等待原任务入组；结果未知仍保留占用")
+		}
 		return block("没有已确认的净缺口；继续采样并跟踪在途")
 	}
 	if limits.Failures >= c.FailureLimit {
@@ -195,17 +206,21 @@ func Evaluate(c Config, s Snapshot, tasks []Task, limits Limits, confirmations, 
 	if c.DayBudget > 0 {
 		hard = min(hard, int(max(int64(0), c.DayBudget-limits.DayCost)/max(int64(1), c.UnitCost)))
 	}
-	if !c.AllowSmall && hard < c.MinBatch {
+	strictMinimum := !c.AllowSmall && !d.EmptyGroupOnly()
+	if strictMinimum && hard < c.MinBatch {
 		return block("在途、池容量或预算余量不足最小批量")
 	}
-	if !c.AllowSmall {
+	if strictMinimum {
 		need = max(need, c.MinBatch)
 	}
 	d.Suggested = max(0, min(need, hard))
 	if d.Suggested == 0 {
 		return block("达到在途、账号池、小时／日数量或预算上限")
 	}
-	d.Reason = "时间、并发与备用净缺口取最大值，及时在途已在各规则中扣除"
+	d.Reason = "时间、并发、备用与空分组净缺口取最大值，各规则已扣除适用在途"
+	if d.EmptyGroupOnly() {
+		d.Reason = "监控分组为 0 个账号，按空分组启动数量补货；已扣除同组全部在途"
+	}
 	if !c.Enabled {
 		d.Reason = "总开关关闭，仅展示建议"
 	} else if c.Mode == "observe" {

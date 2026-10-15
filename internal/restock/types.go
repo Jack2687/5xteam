@@ -27,6 +27,7 @@ type Config struct {
 	AllowSmall               bool   `json:"allow_small"`
 	MaxInflight              int    `json:"max_inflight"`
 	Reserve                  int    `json:"reserve"`
+	EmptyGroupCount          int    `json:"empty_group_count"`
 	CheckSeconds             int    `json:"check_seconds"`
 	QuotaSeconds             int    `json:"quota_seconds"`
 	CooldownSeconds          int    `json:"cooldown_seconds"`
@@ -51,6 +52,9 @@ func DefaultConfig() Config {
 	return Config{FaultPercent: 50, Version: 1, Mode: "observe", TimeEnabled: true, TriggerMinutes: 10, TargetMinutes: 15, Early: true, ConcurrencyEnabled: true, TriggerPercent: 85, TargetPercent: 75, Confirmations: 2, EmergencyQueue: 3, MinBatch: 3, MaxBatch: 5, AllowSmall: true, MaxInflight: 6, CheckSeconds: 5, QuotaSeconds: 60, CooldownSeconds: 60, EmergencyCooldownSeconds: 20, HourLimit: 20, DayLimit: 100, PoolLimit: 100, FailureLimit: 3, FreshSeconds: 20, QuotaCoverage: 80, LeadMinutes: 5, MarginMinutes: 1, ForecastMinutes: 60, LeadSamples: 10, RetentionDays: 7}
 }
 func (c Config) Validate() error {
+	if c.EmptyGroupCount < 0 || c.EmptyGroupCount > 1000 {
+		return errors.New("空分组启动补货数量应为 0～1000，0 表示关闭")
+	}
 	if c.MinNewUsePercent < 0 || c.MinNewUsePercent > 100 {
 		return errors.New("新号预计最低使用比例应为 0～100%，0 表示不限制")
 	}
@@ -127,26 +131,27 @@ type Snapshot struct {
 	Accounts        []Account `json:"accounts"`
 }
 type Task struct {
-	Plan        string               `json:"plan"`
-	ID          string               `json:"id"`
-	DecisionID  string               `json:"decision_id"`
-	Email       string               `json:"email"`
-	Version     int                  `json:"version"`
-	GroupID     int64                `json:"group_id"`
-	Binding     string               `json:"binding"`
-	Status      string               `json:"status"`
-	Stage       string               `json:"stage"`
-	Message     string               `json:"message"`
-	OrderID     string               `json:"order_id"`
-	CardID      string               `json:"card_id"`
-	AccountID   int64                `json:"account_id"`
-	Cost        int64                `json:"cost"`
-	CreatedAt   time.Time            `json:"created_at"`
-	UpdatedAt   time.Time            `json:"updated_at"`
-	SubmittedAt *time.Time           `json:"submitted_at,omitempty"`
-	ReadyAt     *time.Time           `json:"ready_at,omitempty"`
-	ETA         *time.Time           `json:"eta,omitempty"`
-	Stages      map[string]time.Time `json:"stages"`
+	EmptyGroupStartup bool                 `json:"empty_group_startup,omitempty"`
+	Plan              string               `json:"plan"`
+	ID                string               `json:"id"`
+	DecisionID        string               `json:"decision_id"`
+	Email             string               `json:"email"`
+	Version           int                  `json:"version"`
+	GroupID           int64                `json:"group_id"`
+	Binding           string               `json:"binding"`
+	Status            string               `json:"status"`
+	Stage             string               `json:"stage"`
+	Message           string               `json:"message"`
+	OrderID           string               `json:"order_id"`
+	CardID            string               `json:"card_id"`
+	AccountID         int64                `json:"account_id"`
+	Cost              int64                `json:"cost"`
+	CreatedAt         time.Time            `json:"created_at"`
+	UpdatedAt         time.Time            `json:"updated_at"`
+	SubmittedAt       *time.Time           `json:"submitted_at,omitempty"`
+	ReadyAt           *time.Time           `json:"ready_at,omitempty"`
+	ETA               *time.Time           `json:"eta,omitempty"`
+	Stages            map[string]time.Time `json:"stages"`
 }
 
 func (t Task) Active() bool {
@@ -188,7 +193,14 @@ type Decision struct {
 	TimeNeed        int       `json:"time_need"`
 	ConcurrencyNeed int       `json:"concurrency_need"`
 	ReserveNeed     int       `json:"reserve_need"`
+	EmptyGroupNeed  int       `json:"empty_group_need"`
 	Suggested       int       `json:"suggested"`
 	Started         int       `json:"started"`
 	Confirmations   int       `json:"confirmations"`
+}
+
+// EmptyGroupOnly identifies an explicit startup quantity, which must not be
+// rounded up to the ordinary minimum batch size.
+func (d Decision) EmptyGroupOnly() bool {
+	return d.EmptyGroupNeed > 0 && d.TimeNeed == 0 && d.ConcurrencyNeed == 0 && d.ReserveNeed == 0
 }

@@ -5,9 +5,11 @@ import {createLatestRequest} from '../latestRequest'
 const state=ref(null),tab=ref('dashboard'),busy=ref(false),error=ref(''),notice=ref(''),groups=ref([]),search=ref(''),records=ref([]),page=ref(1),detail=ref(null),dialog=ref(null),dirty=ref(false),form=reactive({})
 let timer,disposed=false,returnFocus,stateRevision=0
 const stateRequest=createLatestRequest(),recordsRequest=createLatestRequest()
+const collectionError=ref('')
 const d=computed(()=>state.value?.decision||{}),snap=computed(()=>state.value?.snapshot||{}),inherited=computed(()=>state.value?.inherited||{}),tasks=computed(()=>state.value?.tasks||[])
 const active=computed(()=>tasks.value.filter(t=>!['ready','failed','cancelled'].includes(t.status))),filteredGroups=computed(()=>groups.value.filter(g=>g.name.toLowerCase().includes(search.value.toLowerCase())))
 const stale=computed(()=>!snap.value.at||Date.now()-new Date(snap.value.at).getTime()>1000*(state.value?.config?.fresh_seconds||20))
+const monitorUnavailable=computed(()=>stale.value||!snap.value.valid||!snap.value.load_valid)
 const fmt=t=>t&&!String(t).startsWith('0001')?new Date(t).toLocaleString('zh-CN',{hour12:false}):'—'
 const mins=n=>Number.isFinite(n)?Number(n).toFixed(1)+' 分钟':'暂不可估'
 const statuses={reserved:'已预留 / 排队',submitting:'启动确认中',running:'全自动执行中',unknown:'原订单待确认',verifying:'已推送待核验',ready:'已就绪',failed:'确认失败',attention:'需要人工核验',cancelled:'未提交已取消',external:'其他来源在途'}
@@ -15,8 +17,8 @@ const stages={queued:'等待工作槽位',login:'登录',recharge:'开通 / 付�
 const sections=[
  {title:'预计供给不足',text:'按可信额度样本预测首次缺口；数据不足时不依赖此规则自动开通。',fields:[['time_enabled','启用时间规则','bool'],['trigger_minutes','触发水位（分钟）',1,1439],['target_minutes','补后目标（分钟）',2,1440],['early','按实际就绪耗时提前补货','bool']]},
  {title:'持续并发压力',text:'关注账号实际占用和账号侧等待，连续新快照确认。',fields:[['concurrency_enabled','启用并发规则','bool'],['trigger_percent','触发利用率（%）',1,100],['target_percent','补后目标利用率（%）',1,99],['confirmations','连续确认次数',1,100],['emergency_queue','紧急账号排队阈值',1,100000]]},
- {title:'补货数量',text:'时间、并发和最低备用的净缺口取最大值；及时在途已扣除。最低预计使用比例仅限制时间规则，持续并发与备用仍独立生效。',fields:[['min_batch','每批最少',1,100],['max_batch','每批最多',1,100],['allow_small','缺口不足最小批量时允许少补','bool'],['max_inflight','最大在途账号数',1,1000],['reserve','最低备用账号数',0,10000],['min_new_use_percent','新号最低预计使用比例（%，0 不限制）',0,100]]},
- {title:'运行节奏',text:'新快照仍有缺口且冷却结束即可继续补，不要求先恢复正常。',fields:[['check_seconds','并发检查周期（秒）',2,300],['quota_seconds','额度刷新周期（秒）',30,3600],['cooldown_seconds','正常冷却（秒）',1,86400],['emergency_cooldown_seconds','紧急冷却（秒）',1,86400]]}
+ {title:'补货数量',text:'时间、并发、最低备用和空分组的净缺口取最大值，不相加；各规则扣除适用在途。最低备用用于持续维护可用账号，空分组启动仅在实际空组时新增。',fields:[['min_batch','每批最少',1,100],['max_batch','每批最多',1,100],['allow_small','缺口不足最小批量时允许少补','bool'],['max_inflight','最大在途账号数',1,1000],['reserve','最低备用账号数',0,10000],['min_new_use_percent','新号最低预计使用比例（%，0 不限制）',0,100],['empty_group_count','空分组启动补货数量（个，0 关闭）',0,1000]]},
+ {title:'运行节奏',text:'采集失败时暂停新增，按并发检查周期自动重试，也可点击“立即重试”。采集成功后恢复规则判断，仍遵守连续确认、冷却和数量限制。',fields:[['check_seconds','并发检查周期（秒）',2,300],['quota_seconds','额度刷新周期（秒）',30,3600],['cooldown_seconds','正常冷却（秒）',1,86400],['emergency_cooldown_seconds','紧急冷却（秒）',1,86400]]}
 ]
 const advanced=[
  {title:'成本与数量保护',text:'预算按每号保守成本预留记账，单位须一致，不直接换算供应商 Credits；不包含其他策略支出。金额限制为 0 时关闭。',fields:[['hour_limit','每小时最多补充',1,10000],['day_limit','每天最多补充',1,10000],['unit_cost','每号成本预留（记账单位）',0,100000000],['hour_budget','每小时预留预算',0,100000000000],['day_budget','每日预留预算',0,100000000000],['pool_limit','监控池硬上限',1,10000],['failure_limit','连续异常熔断阈值',1,100],['fault_percent','账号异常暂停比例（%）',1,100]]},
@@ -28,6 +30,7 @@ async function refresh(initial=false,background=false){
  try{await stateRequest.run(signal=>api('/api/pro-restock',{signal}),async data=>{
   if(disposed||revision!==stateRevision)return
   state.value=data
+  if(!monitorUnavailable.value)collectionError.value=''
   if(initial)Object.assign(form,data.config)
   await loadRecords(true)
  },{background})}catch(e){if(!disposed&&revision===stateRevision)error.value=e.message}
@@ -36,8 +39,22 @@ async function loadRecords(background=false){
  const requestedPage=page.value
  await recordsRequest.run(signal=>api('/api/pro-restock/records?page='+requestedPage,{signal}),data=>{records.value=data},{background})
 }
-async function action(fn){if(busy.value||disposed)return;busy.value=true;stateRevision++;error.value='';notice.value='';try{await fn()}catch(e){if(!disposed)error.value=e.message}finally{busy.value=false}}
-async function evaluate(){await action(async()=>{const data=await api('/api/pro-restock/evaluate',{method:'POST'});if(disposed)return;state.value=data;await loadRecords();notice.value='已完成评估；自动模式会启动符合规则的全自动流程。'})}
+async function action(fn){if(busy.value||disposed)return;busy.value=true;stateRevision++;error.value='';collectionError.value='';notice.value='';try{await fn()}catch(e){if(!disposed)error.value=e.message}finally{busy.value=false}}
+async function evaluate(){await action(async()=>{
+ const data=await api('/api/pro-restock/evaluate',{method:'POST'})
+ if(disposed)return
+ state.value=data
+ if(monitorUnavailable.value){
+  collectionError.value='本次采集未恢复，新增补货继续暂停：'+(data.snapshot?.error||'监控数据缺失或过期。')
+ }else if(!data.config.enabled){
+  notice.value='采集成功，已更新评估；新增仍处于手动暂停状态。'
+ }else if(data.config.mode==='auto'){
+  notice.value='采集成功，已恢复规则判断；满足补货条件和限制时才启动全自动 Pro。'
+ }else{
+  notice.value='采集成功，已恢复观察评估；观察模式不会启动全自动 Pro。'
+ }
+ await loadRecords()
+})}
 async function save(){await action(async()=>{const c=await api('/api/pro-restock/config',{method:'PUT',body:form});if(disposed)return;state.value={...state.value,config:c};Object.assign(form,c);dirty.value=false;await refresh();notice.value='配置 v'+c.version+' 已保存。'})}
 async function pause(){await action(async()=>{const c=await api('/api/pro-restock/config',{method:'PUT',body:{...state.value.config,enabled:!state.value.config.enabled}});if(disposed)return;state.value={...state.value,config:c};Object.assign(form,c);dirty.value=false;await refresh(true);notice.value=c.enabled?'后台监控已启用':'新增已暂停，已提交任务继续跟踪。'})}
 async function loadGroups(){await action(async()=>{groups.value=await api('/api/pro-restock/groups');notice.value='已读取 Pro 推送连接的 Sub2 分组。'})}
@@ -51,18 +68,18 @@ onUnmounted(()=>{disposed=true;stateRevision++;clearInterval(timer);stateRequest
 </script>
 <template>
 <div class="restock">
- <header class="page-head"><div><p class="eyebrow">SPACE / PRO</p><h1>Pro 自动补货</h1><p>按供给时间与并发压力判断，分批启动现有全自动 Pro 流程。</p></div><div class="actions"><button :disabled="busy" @click="evaluate">立即评估</button><button class="primary" :disabled="busy||!state" @click="pause">{{state?.config?.enabled?'暂停新增':'启用监控'}}</button></div></header>
+ <header class="page-head"><div><p class="eyebrow">SPACE / PRO</p><h1>Pro 自动补货</h1><p>按供给时间与并发压力判断，分批启动现有全自动 Pro 流程。</p></div><div class="actions"><button :disabled="busy||!state" @click="evaluate">{{monitorUnavailable?'立即重试':'立即评估'}}</button><button class="primary" :disabled="busy||!state" @click="pause">{{state?.config?.enabled?'暂停新增':'启用监控'}}</button></div></header>
  <nav class="tabs" aria-label="Pro 自动补货页面"><button v-for="(name,key) in {dashboard:'监控大屏',settings:'补货配置',records:'决策与记录'}" :key="key" :class="{selected:tab===key}" :aria-current="tab===key?'page':undefined" @click="changeTab(key)">{{name}}</button></nav>
- <p v-if="error" role="alert" class="notice danger">{{error}}</p><p v-if="notice" role="status" class="notice">{{notice}}</p>
+ <p v-if="error||collectionError" role="alert" class="notice danger">{{error||collectionError}}</p><p v-if="notice" role="status" class="notice">{{notice}}</p>
  <p v-if="!state" class="empty">正在读取补货状态…</p>
  <template v-else>
- <div class="runbar"><span><b>{{state.config.enabled?'后台监控已启用':'新增已暂停'}}</b> · {{state.config.mode==='auto'?'自动执行':'观察模式'}} · 配置 v{{state.config.version}}</span><span>监控组 #{{state.config.group_id||'未选择'}} · 快照 {{fmt(snap.at)}}</span></div>
+ <div class="runbar"><span><b>{{!state.config.enabled?'新增已手动暂停':monitorUnavailable?'采集异常 · 新增暂停 / 自动重试中':'后台监控已启用'}}</b> · {{state.config.mode==='auto'?'自动执行':'观察模式'}} · 配置 v{{state.config.version}}</span><span>监控组 #{{state.config.group_id||'未选择'}} · 快照 {{fmt(snap.at)}}</span></div>
  <p v-if="inherited.scheduled_enabled" class="notice warn">原定时任务仍已启用，会按原固定数量策略开通。同池同时使用时，新补货不能阻止原任务补号。</p>
  <section v-if="tab==='dashboard'">
-  <div v-if="stale||!snap.valid||!snap.load_valid" class="notice warn">{{snap.error||'尚无有效快照，请先选择监控分组并检查连接。'}}<span v-if="stale"> 当前显示最近保存数据，已过有效期。</span></div>
+  <div v-if="monitorUnavailable" class="notice warn">{{snap.error||'尚无有效快照，请先选择监控分组并检查连接。'}}<span v-if="stale&&snap.accounts?.length"> 当前显示历史数据，已过有效期。</span><p v-if="state.config.enabled">新增补货暂时停止，每轮采集结束后等待 {{state.config.check_seconds}} 秒重试；成功后自动恢复判断。也可点击“立即重试”。已提交的全自动 Pro 流程继续执行。</p><p v-else>可点击“立即重试”检查连接和数据；成功后仍保留手动暂停状态。</p></div>
   <div class="kpis"><article><span>当前可用账号</span><strong>{{d.usable??'—'}}<small> / {{snap.accounts?.length??0}}</small></strong><p>按 Sub2 实际组归属与可调度状态</p></article><article><span>有效并发容量</span><strong>{{d.used??'—'}}<small> / {{d.capacity??'—'}}</small></strong><p>账号侧等待 {{d.waiting||0}} · 不含用户限流</p></article><article><span>预计支撑时间</span><strong class="medium">{{mins(d.supply_minutes)}}</strong><p>可信样本覆盖 {{Number(d.coverage||0).toFixed(0)}}%</p></article><article><span>正在补充</span><strong>{{active.length}}<small> / {{state.config.max_inflight}}</small></strong><p>核验就绪前均不计为当前可用</p></article></div>
-  <div class="two-grid"><article class="panel recommendation"><div class="panel-head"><h2>本轮补货建议</h2><span class="badge">{{state.config.mode==='auto'?'自动执行':'观察模式'}}</span></div><div class="recommend">{{d.suggested||0}}<span> 个</span></div><p>{{d.reason||'等待第一轮评估'}}</p><div class="line"><span>时间 / 并发 / 备用净缺口</span><b>{{d.time_need||0}} / {{d.concurrency_need||0}} / {{d.reserve_need||0}}</b></div><div class="line"><span>本轮已预留</span><b>{{d.started||0}} 个</b></div><div class="line"><span>连续压力确认</span><b>{{d.confirmations||0}} / {{state.config.confirmations}}</b></div><button @click="showDetail(d)">查看本轮详情</button></article>
-  <article class="panel"><h2>两条规则独立判断</h2><div class="rule"><h3>01 / 预计供给不足</h3><p>配置水位 {{state.config.trigger_minutes}} 分钟；实际提前量 {{mins(d.trigger_minutes)}}；补后目标 {{mins(d.target_minutes)}}。</p></div><div class="rule"><h3>02 / 持续并发压力</h3><p>利用率达到 {{state.config.trigger_percent}}%，连续 {{state.config.confirmations}} 次确认；补后希望降到 {{state.config.target_percent}}%。</p></div><div class="rule"><h3>最低备用 / 冷启动</h3><p>保留 {{state.config.reserve}} 个可用账号。备用为 0 时，无需求空池不自动开通。</p></div></article></div>
+  <div class="two-grid"><article class="panel recommendation"><div class="panel-head"><h2>本轮补货建议</h2><span class="badge">{{state.config.mode==='auto'?'自动执行':'观察模式'}}</span></div><div class="recommend">{{d.suggested||0}}<span> 个</span></div><p>{{d.reason||'等待第一轮评估'}}</p><div class="line"><span>时间 / 并发 / 备用 / 空组净缺口</span><b>{{d.time_need||0}} / {{d.concurrency_need||0}} / {{d.reserve_need||0}} / {{d.empty_group_need||0}}</b></div><div class="line"><span>本轮已预留</span><b>{{d.started||0}} 个</b></div><div class="line"><span>连续压力确认</span><b>{{d.confirmations||0}} / {{state.config.confirmations}}</b></div><button @click="showDetail(d)">查看本轮详情</button></article>
+  <article class="panel"><h2>补货触发规则</h2><div class="rule"><h3>01 / 预计供给不足</h3><p>配置水位 {{state.config.trigger_minutes}} 分钟；实际提前量 {{mins(d.trigger_minutes)}}；补后目标 {{mins(d.target_minutes)}}。</p></div><div class="rule"><h3>02 / 持续并发压力</h3><p>利用率达到 {{state.config.trigger_percent}}%，连续 {{state.config.confirmations}} 次确认；补后希望降到 {{state.config.target_percent}}%。</p></div><div class="rule"><h3>03 / 空分组启动</h3><p>实际组成员为 0 时，启动数量 {{state.config.empty_group_count||0}} 个（0 关闭），扣除同组全部在途。已预留本批继续执行。</p></div><div class="rule"><h3>04 / 最低备用</h3><p>持续维护 {{state.config.reserve}} 个可用账号（0 关闭），独立于空分组启动。</p></div></article></div>
   <div class="quality-grid"><article class="panel"><span>新任务预计就绪（含排队）</span><strong>{{mins(d.lead_minutes)}}</strong><p>登录 → 开通 → 新授权 → 推送 → 核验</p></article><article class="panel"><span>开通工作并发 / 单号请求并发</span><strong>{{inherited.concurrency}} / {{inherited.sub2?.account_concurrency}}</strong><p>继承 Pro 管理，两个并发含义不同</p></article><article class="panel"><span>本小时 / 今日补货数量</span><strong>{{state.limits.hour_count}} / {{state.limits.day_count}}</strong><p>成本预留 {{state.limits.day_cost}}；未知结果继续占用</p></article></div>
   <p v-if="d.idle_equivalent>0" class="notice warn">按当前速度，推送等待时限内预计用不完约 {{Number(d.idle_equivalent).toFixed(1)}} 个账号的等效额度（仅含可信样本）。可配置新号最低预计使用比例限制普通补货。</p>
   <p v-for="warning in d.warnings||[]" :key="warning" class="notice warn">{{warning}}</p>
@@ -75,7 +92,7 @@ onUnmounted(()=>{disposed=true;stateRevision++;clearInterval(timer);stateRequest
  </div><details class="panel advanced"><summary>高级配置 · 成本、数据与到货保护</summary><div class="two-grid"><article v-for="section in advanced" :key="section.title"><h3>{{section.title}}</h3><p class="muted">{{section.text}}</p><div class="fields"><label v-for="field in section.fields" :key="field[0]">{{field[1]}}<input v-model.number="form[field[0]]" type="number" :min="field[2]" :max="field[3]" step="1" required></label></div></article></div><button type="button" :disabled="busy" @click="resetBreaker">处理故障后重置熔断</button></details><div class="savebar"><span>{{dirty?'有未保存修改':'参数由后台持久化保存'}}</span><button class="primary" :disabled="busy" type="submit">{{busy?'检查并保存…':'保存配置'}}</button></div></form></section>
  <section v-if="tab==='records'"><article class="panel"><div class="panel-head"><h2>补货决策与执行记录</h2><span class="badge">持久化记录 · 第 {{page}} 页</span></div><p class="muted">点击“查看”打开本轮详情，包含配置版本、快照、缺口与限制。</p><div class="tablewrap"><table><thead><tr><th>时间 / 配置</th><th>事件</th><th>结果</th><th>在途</th><th>原因</th><th>明细</th></tr></thead><tbody><tr v-for="r in records" :key="r.id"><td>{{fmt(r.at)}}<small>v{{r.version}}</small></td><td>补货决策</td><td>{{r.started?'已预留 '+r.started+' 个':'建议 '+r.suggested+' 个'}}</td><td>{{r.inflight}}</td><td>{{r.reason}}</td><td><button @click="showDetail(r)">查看</button></td></tr><tr v-if="!records.length"><td colspan="6" class="empty">暂无记录，启用观察或立即评估后显示</td></tr></tbody></table></div><div class="pagination"><button :disabled="page<=1||busy" @click="page--;action(loadRecords)">上一页</button><button :disabled="records.length<30||busy" @click="page++;action(loadRecords)">下一页</button></div></article></section>
  </template>
- <dialog ref="dialog" class="detail-modal" aria-labelledby="restock-detail-title" @cancel.prevent="closeDetail" @click="$event.target===dialog&&closeDetail()"><div v-if="detail"><header><div><p class="eyebrow">PRO / {{detail.email?'TASK':'DECISION'}}</p><h2 id="restock-detail-title">{{detail.email?'账号执行详情':'补货决策详情'}}</h2></div><button aria-label="关闭详情" @click="closeDetail">✕</button></header><div class="detail-body"><p><b>{{detail.reason||detail.message}}</b></p><div class="line"><span>时间 / 配置</span><b>{{fmt(detail.at||detail.created_at)}} · v{{detail.version}}</b></div><template v-if="detail.snapshot"><div class="line"><span>时间 / 并发 / 备用净缺口</span><b>{{detail.time_need}} / {{detail.concurrency_need}} / {{detail.reserve_need}}</b></div><div class="line"><span>建议 / 实际预留</span><b>{{detail.suggested}} / {{detail.started}}</b></div><div class="line"><span>预计就绪 / 实际提前量</span><b>{{mins(detail.lead_minutes)}} / {{mins(detail.trigger_minutes)}}</b></div><p v-for="v in detail.warnings||[]" :key="v" class="notice warn">{{v}}</p><h3>关联任务</h3><p v-for="t in detail.related_tasks||[]" :key="t.id">{{t.email}} · {{statuses[t.status]}} · {{t.order_id||'尚无订单'}}</p></template><template v-else><div class="line"><span>账号 / 状态</span><b>{{detail.email}} · {{statuses[detail.status]}}</b></div><div class="line"><span>原订单 / 卡片</span><b>{{detail.order_id||'—'}} / {{detail.card_id||'—'}}</b></div><div class="line"><span>Sub2 ID</span><b>{{detail.account_id||'—'}}</b></div><div v-for="(at,key) in detail.stages" :key="key" class="line"><span>{{stages[key]||key}}</span><b>{{fmt(at)}}</b></div></template><details><summary>完整脱敏快照与配置</summary><pre>{{JSON.stringify(detail,null,2)}}</pre></details></div><footer><button class="primary" @click="closeDetail">关闭详情</button></footer></div></dialog>
+ <dialog ref="dialog" class="detail-modal" aria-labelledby="restock-detail-title" @cancel.prevent="closeDetail" @click="$event.target===dialog&&closeDetail()"><div v-if="detail"><header><div><p class="eyebrow">PRO / {{detail.email?'TASK':'DECISION'}}</p><h2 id="restock-detail-title">{{detail.email?'账号执行详情':'补货决策详情'}}</h2></div><button aria-label="关闭详情" @click="closeDetail">✕</button></header><div class="detail-body"><p><b>{{detail.reason||detail.message}}</b></p><div class="line"><span>时间 / 配置</span><b>{{fmt(detail.at||detail.created_at)}} · v{{detail.version}}</b></div><template v-if="detail.snapshot"><div class="line"><span>时间 / 并发 / 备用 / 空组净缺口</span><b>{{detail.time_need}} / {{detail.concurrency_need}} / {{detail.reserve_need||0}} / {{detail.empty_group_need||0}}</b></div><div class="line"><span>建议 / 实际预留</span><b>{{detail.suggested}} / {{detail.started}}</b></div><div class="line"><span>预计就绪 / 实际提前量</span><b>{{mins(detail.lead_minutes)}} / {{mins(detail.trigger_minutes)}}</b></div><p v-for="v in detail.warnings||[]" :key="v" class="notice warn">{{v}}</p><h3>关联任务</h3><p v-for="t in detail.related_tasks||[]" :key="t.id">{{t.email}} · {{statuses[t.status]}} · {{t.order_id||'尚无订单'}}</p></template><template v-else><div class="line"><span>账号 / 状态</span><b>{{detail.email}} · {{statuses[detail.status]}}</b></div><div class="line"><span>原订单 / 卡片</span><b>{{detail.order_id||'—'}} / {{detail.card_id||'—'}}</b></div><div class="line"><span>Sub2 ID</span><b>{{detail.account_id||'—'}}</b></div><div v-for="(at,key) in detail.stages" :key="key" class="line"><span>{{stages[key]||key}}</span><b>{{fmt(at)}}</b></div></template><details><summary>完整脱敏快照与配置</summary><pre>{{JSON.stringify(detail,null,2)}}</pre></details></div><footer><button class="primary" @click="closeDetail">关闭详情</button></footer></div></dialog>
 </div>
 </template>
 <style scoped>

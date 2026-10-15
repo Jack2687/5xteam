@@ -22,7 +22,7 @@ function fixture() {
       return promise
     },
   })
-  vm.runInContext(code + '\nglobalThis.exposed = {state, form, records, page, refresh, pause, evaluate, resetBreaker, loadRecords};', context)
+  vm.runInContext(code + '\nglobalThis.exposed = {state, form, records, page, refresh, pause, evaluate, resetBreaker, loadRecords, error, collectionError, notice, monitorUnavailable};', context)
   return { requests, timers, mounted: () => mounted(), unmounted: () => unmounted(), ...context.exposed }
 }
 
@@ -86,4 +86,46 @@ for (const action of ['pause', 'evaluate', 'resetBreaker']) {
   assert.equal(f.records.value[0].id, 'page-2', 'old page replaced current records')
   f.unmounted()
 }
-console.log('Passed: restock unmount, pause/evaluate/reset ordering, and record paging')
+// Manual retry reports the new collection result and preserves the saved mode.
+for (const scenario of ['failed', 'load_failed', 'stale', 'auto', 'observe', 'disabled', 'busy']) {
+  const f = fixture()
+  f.state.value = { config: { enabled: true, mode: 'auto' }, snapshot: { valid: false } }
+  assert.equal(f.monitorUnavailable.value, true)
+  const operation = f.evaluate()
+  await tick()
+  const mutation = f.requests[0]
+  assert.equal(mutation.url, '/api/pro-restock/evaluate')
+  if (scenario === 'busy') {
+    mutation.reject(new Error('正在采集或更新补货配置，请稍后重试'))
+  } else {
+    mutation.resolve({
+      config: { enabled: scenario !== 'disabled', mode: scenario === 'observe' ? 'observe' : 'auto', fresh_seconds: 20 },
+      snapshot: { valid: scenario !== 'failed', load_valid: scenario !== 'load_failed', at: new Date(Date.now() - (scenario === 'stale' ? 60000 : 0)).toISOString(), error: scenario === 'failed' ? '接口超时' : '' },
+    })
+    await tick()
+    for (const r of f.requests.filter(r => r.url.includes('/records'))) r.resolve([])
+  }
+  await operation
+  if (['failed', 'load_failed', 'stale', 'busy'].includes(scenario)) {
+    assert.ok(f.error.value || f.collectionError.value, `${scenario}: missing failure feedback`)
+    assert.equal(f.notice.value, '', `${scenario}: false success feedback`)
+    assert.equal(f.monitorUnavailable.value, true)
+  } else {
+    assert.equal(f.error.value, '')
+    assert.equal(f.monitorUnavailable.value, false)
+    assert.match(f.notice.value, scenario === 'auto' ? /恢复规则判断/ : scenario === 'observe' ? /观察模式不会/ : /手动暂停/)
+    if (scenario === 'disabled') assert.equal(f.state.value.config.enabled, false)
+  }
+  if (scenario === 'failed') {
+    const poll = f.refresh(false, true)
+    await tick()
+    f.requests.findLast(r => r.url === '/api/pro-restock').resolve({ config: {enabled: true, mode: 'auto', fresh_seconds: 20}, snapshot: {valid: true, load_valid: true, at: new Date().toISOString()} })
+    await tick()
+    f.requests.findLast(r => r.url.includes('/records')).resolve([])
+    await poll
+    assert.equal(f.collectionError.value, '', 'automatic recovery left old manual retry failure visible')
+    assert.equal(f.monitorUnavailable.value, false)
+  }
+  f.unmounted()
+}
+console.log('Passed: restock request ordering, record paging, and manual retry failure/recovery feedback')

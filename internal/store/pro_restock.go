@@ -187,7 +187,8 @@ func (s *Store) ReserveProRestock(d restock.Decision, target string, existingInf
 	if l.Failures >= c.FailureLimit || (l.LastBatch != nil && d.At.Sub(*l.LastBatch) < time.Duration(cooldown)*time.Second) {
 		n = 0
 	}
-	if n < 1 || (!c.AllowSmall && n < c.MinBatch) {
+	strictMinimum := !c.AllowSmall && !d.EmptyGroupOnly()
+	if n < 1 || (strictMinimum && n < c.MinBatch) {
 		return nil, errors.New("事务复核：冷却、在途或预算不允许新增")
 	}
 	rows, err := tx.Query(proScheduleCandidateSQL, n)
@@ -209,12 +210,13 @@ func (s *Store) ReserveProRestock(d restock.Decision, target string, existingInf
 	if err != nil {
 		return nil, err
 	}
-	if len(emails) == 0 || (!c.AllowSmall && len(emails) < c.MinBatch) {
+	if len(emails) == 0 || (strictMinimum && len(emails) < c.MinBatch) {
 		return nil, errors.New("可领取的新账号不足批量要求")
 	}
 	out := []restock.Task{}
 	for i, email := range emails {
 		t := restock.Task{ID: fmt.Sprintf("%s-%d", d.ID, i+1), Plan: d.Snapshot.NewPlan, DecisionID: d.ID, Email: email, Version: c.Version, GroupID: c.GroupID, Binding: d.Snapshot.Binding, Status: "reserved", Stage: "queued", Cost: c.UnitCost, CreatedAt: d.At, UpdatedAt: d.At, Stages: map[string]time.Time{"reserved": d.At}}
+		t.EmptyGroupStartup = d.EmptyGroupOnly()
 		var raw string
 		var p model.MailAccountProfile
 		if err = tx.QueryRow(`SELECT profile FROM mail_accounts WHERE email=?`, email).Scan(&raw); err != nil {

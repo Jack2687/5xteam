@@ -4,6 +4,7 @@ import (
 	"chatgpt-space-merge/internal/model"
 	"chatgpt-space-merge/internal/restock"
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -22,7 +23,14 @@ func (s *Server) registerProRestock(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/pro-restock/config", s.saveProRestockConfig)
 	mux.HandleFunc("GET /api/pro-restock/groups", s.getProRestockGroups)
 	mux.HandleFunc("POST /api/pro-restock/evaluate", func(w http.ResponseWriter, r *http.Request) {
-		s.tickProRestock(r.Context(), true)
+		if err := s.tickProRestock(r.Context(), true); err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, errProRestockBusy) {
+				status = http.StatusConflict
+			}
+			writeAPI(w, status, nil, err.Error())
+			return
+		}
 		s.getProRestock(w, r)
 	})
 	mux.HandleFunc("POST /api/pro-restock/reset-breaker", func(w http.ResponseWriter, r *http.Request) {

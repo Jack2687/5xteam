@@ -262,23 +262,27 @@ func (s *Server) restockTasks(snap restock.Snapshot, p model.ProSettings, c rest
 	}
 	return tasks, lead * (1 + float64(queued/max(1, p.Concurrency))), nil
 }
-func (s *Server) tickProRestock(ctx context.Context, force bool) {
+
+var errProRestockBusy = errors.New("正在采集或更新补货配置，请稍后重试")
+
+func (s *Server) tickProRestock(ctx context.Context, force bool) error {
 	if !s.proRestock.tick.TryLock() {
-		return
+		return errProRestockBusy
 	}
 	defer s.proRestock.tick.Unlock()
 	now := time.Now()
 	c, e := s.store.ProRestockConfig()
 	if e != nil {
-		return
+		return e
 	}
 	if !force && now.Before(s.proRestock.next) {
-		return
+		return nil
 	}
-	s.proRestock.next = now.Add(time.Duration(c.CheckSeconds) * time.Second)
+	// Retry after the configured interval, even when a failed request was slow.
+	defer func() { s.proRestock.next = time.Now().Add(time.Duration(c.CheckSeconds) * time.Second) }()
 	tasks, e := s.store.ProRestockTasks()
 	if e != nil {
-		return
+		return e
 	}
 	active := false
 	for _, t := range tasks {
@@ -287,11 +291,11 @@ func (s *Server) tickProRestock(ctx context.Context, force bool) {
 		}
 	}
 	if !force && !c.Enabled && !active {
-		return
+		return nil
 	}
 	p, password, _, e := s.store.ProSettings()
 	if e != nil {
-		return
+		return e
 	}
 	sampleCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -321,7 +325,7 @@ func (s *Server) tickProRestock(ctx context.Context, force bool) {
 	}
 	tasks, lead, e := s.restockTasks(snap, p, c)
 	if e != nil {
-		return
+		return e
 	}
 	s.proRestock.mu.Lock()
 	if c.Version != s.proRestock.lastVersion || snap.Binding != s.proRestock.lastSnapshot.Binding || !snap.Valid || !snap.LoadValid {
@@ -343,7 +347,7 @@ func (s *Server) tickProRestock(ctx context.Context, force bool) {
 	now = time.Now()
 	limits, e := s.store.ProRestockLimits(now)
 	if e != nil {
-		return
+		return e
 	}
 	d := restock.Evaluate(c, snap, tasks, limits, confirm, p.Sub2.AccountConcurrency, lead, now)
 	d.ID = randomRegistrationID()
@@ -354,14 +358,16 @@ func (s *Server) tickProRestock(ctx context.Context, force bool) {
 		}
 	}
 	gross := restock.Evaluate(c, snap, committed, restock.Limits{}, confirm, p.Sub2.AccountConcurrency, lead, now)
-	drop := gross.DemandKnown && !restock.Pressure(c, snap) && gross.TimeNeed == 0 && gross.ReserveNeed == 0 && (!c.TimeEnabled || gross.SupplyMinutes != nil || (d.Used == 0 && d.Waiting == 0))
+	drop := gross.DemandKnown && !restock.Pressure(c, snap) && gross.TimeNeed == 0 && gross.ReserveNeed == 0 && gross.EmptyGroupNeed == 0 && (!c.TimeEnabled || gross.SupplyMinutes != nil || (d.Used == 0 && d.Waiting == 0))
 	keepReserved := gross.Suggested
+	startupPending := false
 	for _, t := range tasks {
 		excess := t.Status == "reserved" && gross.DemandKnown && gross.Suggested > 0 && keepReserved <= 0
-		if t.Status == "reserved" && (!c.Enabled || c.Mode != "auto" || t.Version != c.Version || t.Binding != snap.Binding || (snap.Valid && t.Plan != snap.NewPlan) || drop || excess) {
+		if t.Status == "reserved" && (!c.Enabled || c.Mode != "auto" || t.Version != c.Version || t.Binding != snap.Binding || t.GroupID != snap.GroupID || (snap.Valid && t.Plan != snap.NewPlan) || (!t.EmptyGroupStartup && (drop || excess))) {
 			_ = s.store.CancelProRestock(t, "配置变化、暂停或新快照确认需求回落")
 		} else if t.Status == "reserved" {
 			keepReserved--
+			startupPending = startupPending || t.EmptyGroupStartup
 		}
 	}
 	if c.Enabled && c.Mode == "auto" && d.Suggested > 0 && fresh && snap.Valid && ctx.Err() == nil {
@@ -377,8 +383,13 @@ func (s *Server) tickProRestock(ctx context.Context, force bool) {
 			d.Reason = e.Error()
 		}
 	}
-	if c.Enabled && c.Mode == "auto" && snap.Valid && snap.LoadValid && gross.Suggested > 0 && limits.Failures < c.FailureLimit && ctx.Err() == nil {
-		s.dispatchProRestock(ctx, c, p, snap)
+	// Finish the already-reserved startup batch as slots free up, even after
+	// its first account arrives. This never reserves extra startup accounts.
+	if startupPending && gross.DemandKnown && gross.Suggested == 0 {
+		d.Reason += "；空分组启动批次仍有预留，按工作并发继续执行"
+	}
+	if c.Enabled && c.Mode == "auto" && snap.Valid && snap.LoadValid && (gross.Suggested > 0 || (startupPending && gross.DemandKnown)) && limits.Failures < c.FailureLimit && ctx.Err() == nil {
+		s.dispatchProRestock(ctx, c, p, snap, gross.Suggested == 0)
 	}
 	s.proRestock.mu.Lock()
 	s.proRestock.lastSnapshot = snap
@@ -397,8 +408,9 @@ func (s *Server) tickProRestock(ctx context.Context, force bool) {
 		_ = s.store.SaveProRestockDecision(d)
 		_ = s.store.PurgeProRestock(c.RetentionDays)
 	}
+	return nil
 }
-func (s *Server) dispatchProRestock(ctx context.Context, c restock.Config, p model.ProSettings, snap restock.Snapshot) {
+func (s *Server) dispatchProRestock(ctx context.Context, c restock.Config, p model.ProSettings, snap restock.Snapshot, startupOnly bool) {
 	tasks, e := s.store.ProRestockTasks()
 	if e != nil {
 		return
@@ -408,6 +420,9 @@ func (s *Server) dispatchProRestock(ctx context.Context, c restock.Config, p mod
 		return
 	}
 	for _, t := range tasks {
+		if startupOnly && !t.EmptyGroupStartup {
+			continue
+		}
 		if t.Status != "reserved" || t.Version != c.Version || t.Binding != snap.Binding || t.Plan != restockPlan(pay.Provider, pay.PlanCode, pay.Country, pay.CreditQuantity) {
 			continue
 		}
