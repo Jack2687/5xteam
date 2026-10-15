@@ -9,6 +9,7 @@
     "check": "vue-tsc --noEmit",
     "test:ejh": "node scripts/check-ejh.mjs",
     "test:config-layout": "node scripts/check-config-layout.mjs",
+    "test:card-status": "node scripts/check-card-status.mjs",
     "test:card-allocation": "node scripts/check-card-allocation.mjs",
     "test:mail-import": "node scripts/check-mail-import.mjs",
     "test:mail-pro-transfer": "node scripts/check-mail-pro-transfer.mjs",

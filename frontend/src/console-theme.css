@@ -196,11 +196,11 @@ tbody tr:hover { background: var(--surface-2); }
 .app-shell .ejh-stat { border-radius: 12px; padding: 17px; box-shadow: none; }
 .app-shell .ejh-stat-icon { width: 32px; height: 32px; border-radius: 8px; }
 .app-shell .ejh-stat-value strong { font-size: 26px; font-weight: 600; }
-.app-shell .ejh-card-grid { gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
-.app-shell .ejh-card { border-radius: 12px; padding: 20px; }
-.app-shell .ejh-card-number { font-size: 20px; }
+.app-shell .ejh-card-grid { gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
+.app-shell .ejh-card { border-radius: 11px; padding: 14px; }
+.app-shell .ejh-card-number { font-size: 17px; }
 .app-shell .ejh-card-balance { background: var(--surface-2); border-radius: 8px; }
-.app-shell .ejh-card-balance strong { font-size: 22px; }
+.app-shell .ejh-card-balance strong { font-size: 17px; }
 .app-shell .ejh-balance-overview { border-radius: 12px; }
 .app-shell .ejh-balance-values strong { font-size: 26px; font-weight: 600; }
 .app-shell .ejh-statusbar { padding: 12px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
