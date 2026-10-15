@@ -55,6 +55,7 @@ func TestEJHAutoOpeningAfterClosedHistoricalCard(t *testing.T) {
 					if _, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) { p.RemoveStatus = "completed" }); err != nil {
 						t.Fatal(err)
 					}
+					ejhReceiveOrderAPI(t, s, old.ID, "historical-payment")
 				}
 			}
 			remote.Status = tc.status
@@ -166,6 +167,7 @@ func TestEJHAutoOpeningClosedHistoryPreservesAdmissionGuards(t *testing.T) {
 				pro.EJHDailyOpenLimit = 1
 				pro.EJHDailyAmountLimit = "20"
 				_, err = s.store.UpdateProAccount("resident@example.com", func(p *model.MailAccountProfile) { p.RemoveStatus = "completed" })
+				ejhReceiveOrderAPI(t, s, "test-card", "resident-order")
 			case "auto_disabled":
 				pro.EJHAutoOpen = false
 			case "template_missing":

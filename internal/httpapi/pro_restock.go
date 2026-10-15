@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -114,9 +115,7 @@ func (s *Server) collectProRestock(ctx context.Context, c restock.Config, p mode
 		return snap, payErr
 	}
 	snap.NewPlan = restockPlan(pay.Provider, pay.PlanCode, pay.Country, pay.CreditQuantity)
-	if p.ForceMergeEnabled {
-		snap.LifetimeMinutes = p.ForceMergeMinutes
-	}
+
 	// Compare server timestamps with collection completion, not request start.
 	now = time.Now()
 	snap.At = loads.At
@@ -130,12 +129,48 @@ func (s *Server) collectProRestock(ctx context.Context, c restock.Config, p mode
 		snap.LoadValid = false
 		snap.Error = "Sub2 报告并发采集不完整，暂停新增并等待重新采集"
 	}
-	profiles := s.store.MailAccountsByManagementScope("pro")
-	byID := map[int64]model.MailAccountProfile{}
+	profiles, e := s.store.ProRestockProfiles()
+	if e != nil {
+		return snap, e
+	}
+	emails := make([]string, 0, len(profiles))
 	for _, v := range profiles {
-		if v.Sub2AccountID > 0 && v.ProAuto.RestockBinding == snap.Binding {
-			byID[v.Sub2AccountID] = v
+		emails = append(emails, v.Email)
+	}
+	cards, e := s.store.ProActivationCards(emails)
+	if e != nil {
+		return snap, e
+	}
+	byID := map[int64]model.MailAccountProfile{}
+	duplicates := map[int64]bool{}
+	for _, v := range profiles {
+		if v.Sub2AccountID <= 0 || v.PushStatus != "completed" || v.PushProvider != "sub2" || v.SpaceMergedOnce || v.RemoveStatus == "completed" || v.RemoveStatus == "team_removed" {
+			continue
 		}
+		matched := false
+		if v.ProPushDownstream != nil {
+			matched = v.ProPushDownstream.Matches(model.ProDownstream(p))
+		} else if v.ProRestockTargetID != "" {
+			target, _, _, err := s.proAccountPushSettings(v)
+			if err != nil {
+				return snap, err
+			}
+			matched = model.ProDownstream(target).Matches(model.ProDownstream(p))
+		} else if v.ProMigration != nil {
+			matched = v.ProMigration.Downstream.Matches(model.ProDownstream(p))
+		} else {
+			matched = v.ProAuto.RestockBinding == snap.Binding
+		}
+		if !matched {
+			continue
+		}
+		if _, ok := byID[v.Sub2AccountID]; ok {
+			duplicates[v.Sub2AccountID] = true
+		}
+		byID[v.Sub2AccountID] = v
+	}
+	for id := range duplicates {
+		delete(byID, id)
 	}
 	s.proRestock.mu.Lock()
 	if s.proRestock.quotaBinding != snap.Binding {
@@ -152,12 +187,17 @@ func (s *Server) collectProRestock(ctx context.Context, c restock.Config, p mode
 		}
 		if local, ok := byID[a.ID]; ok {
 			if local.ProAuto.QuotaPlan != "" {
-				v.Plan = local.ProAuto.QuotaPlan
+				v.PurchasePlan = local.ProAuto.QuotaPlan
 			}
-			if p.ForceMergeEnabled && local.ProPushStartedAt != nil && !local.SpaceMergedOnce {
-				t := local.ProPushStartedAt.Add(time.Duration(p.ForceMergeMinutes) * time.Minute)
-				if v.ExpiresAt == nil || t.Before(*v.ExpiresAt) {
-					v.ExpiresAt = &t
+			if cards[strings.ToLower(strings.TrimSpace(local.Email))].EJHCardID != "" {
+				v.EJH = true
+				v.PushTimeoutEnabled = local.ProPushTimeoutEnabled
+				v.ForceMergeDeadline = local.ProPushDeadline()
+				if local.ProPushStartedAt != nil && !local.ProPushStartedAt.After(now.Add(5*time.Second)) {
+					key, _ := json.Marshal([]any{model.ProDownstream(p), c.GroupID, local.ID, local.Email, local.ProPushStartedAt.UTC()})
+					v.ForceMergeKey = fmt.Sprintf("%x", sha256.Sum256(key))
+				} else {
+					v.ForceMergeDeadline = nil
 				}
 			}
 		}

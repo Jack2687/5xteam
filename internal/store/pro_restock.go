@@ -14,6 +14,7 @@ func (s *Store) initializeProRestock() error {
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS pro_restock_config(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS pro_restock_tasks(id TEXT PRIMARY KEY,email TEXT NOT NULL COLLATE NOCASE,status TEXT NOT NULL,created_at TEXT NOT NULL,cost INTEGER NOT NULL,payload TEXT NOT NULL);
  CREATE UNIQUE INDEX IF NOT EXISTS pro_restock_account ON pro_restock_tasks(email) WHERE status NOT IN ('ready','failed','cancelled');
+ CREATE TABLE IF NOT EXISTS pro_restock_replacements(source TEXT PRIMARY KEY,task_id TEXT NOT NULL UNIQUE);
  CREATE TABLE IF NOT EXISTS pro_restock_decisions(id TEXT PRIMARY KEY,created_at TEXT NOT NULL,payload TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS pro_restock_snapshot(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS pro_restock_clock(id INTEGER PRIMARY KEY CHECK(id=1),last_batch TEXT,reset_at TEXT);`)
@@ -54,7 +55,7 @@ func (s *Store) SaveProRestockConfig(c restock.Config) (restock.Config, error) {
 	return c, err
 }
 func (s *Store) ProRestockTasks() ([]restock.Task, error) {
-	return s.proRestockTasksWhere("status NOT IN ('ready','failed','cancelled') OR created_at>?", formatTime(time.Now().Add(-48*time.Hour)))
+	return s.proRestockTasksWhere("status NOT IN ('ready','failed','cancelled') OR created_at>? OR EXISTS(SELECT 1 FROM pro_restock_replacements WHERE task_id=pro_restock_tasks.id)", formatTime(time.Now().Add(-48*time.Hour)))
 }
 func (s *Store) ProRestockDecisionTasks(id string) ([]restock.Task, error) {
 	return s.proRestockTasksWhere("json_extract(payload,'$.decision_id')=?", id)
@@ -62,7 +63,7 @@ func (s *Store) ProRestockDecisionTasks(id string) ([]restock.Task, error) {
 func (s *Store) proRestockTasksWhere(where string, arg any) ([]restock.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query("SELECT payload FROM pro_restock_tasks WHERE "+where+" ORDER BY created_at", arg)
+	rows, err := s.db.Query("SELECT json_set(payload,'$.force_merge_source',coalesce((SELECT source FROM pro_restock_replacements WHERE task_id=pro_restock_tasks.id),'')) FROM pro_restock_tasks WHERE "+where+" ORDER BY created_at", arg)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +111,7 @@ func restockLimits(q proCapacityQuery, now time.Time) (restock.Limits, error) {
 	var l restock.Limits
 	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	hour := now.Add(-time.Hour)
-	err := q.QueryRow(`SELECT coalesce(sum(CASE WHEN created_at>=? THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN created_at>=? THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN created_at>=? OR status NOT IN ('ready','failed','cancelled') THEN cost ELSE 0 END),0),coalesce(sum(CASE WHEN created_at>=? OR status NOT IN ('ready','failed','cancelled') THEN cost ELSE 0 END),0) FROM pro_restock_tasks WHERE status!='cancelled'`, formatTime(hour), formatTime(day), formatTime(hour), formatTime(day)).Scan(&l.HourCount, &l.DayCount, &l.HourCost, &l.DayCost)
+	err := q.QueryRow(`SELECT coalesce(sum(CASE WHEN created_at>=? THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN created_at>=? THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN created_at>=? OR status NOT IN ('ready','failed','cancelled') THEN cost ELSE 0 END),0),coalesce(sum(CASE WHEN created_at>=? OR status NOT IN ('ready','failed','cancelled') THEN cost ELSE 0 END),0) FROM pro_restock_tasks WHERE status!='cancelled' AND coalesce(json_extract(payload,'$.managed_externally'),0)=0`, formatTime(hour), formatTime(day), formatTime(hour), formatTime(day)).Scan(&l.HourCount, &l.DayCount, &l.HourCost, &l.DayCost)
 	if err != nil {
 		return l, err
 	}
@@ -173,6 +174,21 @@ func (s *Store) ReserveProRestock(d restock.Decision, target string, existingInf
 	if err = tx.QueryRow(`SELECT count(*) FROM pro_restock_tasks WHERE status NOT IN ('ready','failed','cancelled')`).Scan(&active); err != nil {
 		return nil, err
 	}
+	persisted, err := replacementTasks(tx)
+	if err != nil {
+		return nil, err
+	}
+	stats := restock.ForceMergeSummary(c, d.Snapshot, persisted, d.At)
+	if d.ForceMergeNeed > 0 {
+		need := max(d.TimeNeed, d.ConcurrencyNeed, d.ReserveNeed, d.EmptyGroupNeed, len(stats.Sources))
+		if need == 0 {
+			return nil, errors.New("接替已由原任务覆盖，未重复预留")
+		}
+		if !c.AllowSmall && !d.EmptyGroupOnly() {
+			need = max(need, c.MinBatch)
+		}
+		d.Suggested = min(d.Suggested, need)
+	}
 	n := min(d.Suggested, c.MaxBatch, c.MaxInflight-max(active, existingInflight), c.HourLimit-l.HourCount, c.DayLimit-l.DayCount, c.PoolLimit-len(d.Snapshot.Accounts)-existingInflight)
 	if c.HourBudget > 0 {
 		n = min(n, int(max(int64(0), c.HourBudget-l.HourCost)/max(int64(1), c.UnitCost)))
@@ -232,6 +248,12 @@ func (s *Store) ReserveProRestock(d restock.Decision, target string, existingInf
 		}
 		if _, err = tx.Exec(`INSERT INTO pro_restock_tasks VALUES(?,?,?,?,?,?)`, t.ID, email, t.Status, formatTime(t.CreatedAt), t.Cost, mustJSON(t)); err != nil {
 			return nil, err
+		}
+		if i < len(stats.Sources) {
+			t.ForceMergeSource = stats.Sources[i]
+			if _, err = tx.Exec("INSERT INTO pro_restock_replacements(source,task_id) VALUES(?,?)", t.ForceMergeSource, t.ID); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, t)
 	}

@@ -22,7 +22,9 @@ func (s *Store) initializeEJH() error {
  CREATE INDEX IF NOT EXISTS ejh_cases_email ON ejh_cases(email);
  CREATE INDEX IF NOT EXISTS ejh_cases_card ON ejh_cases(card_id);`)
 	if err == nil {
-		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS ejh_return_links(trade_id TEXT PRIMARY KEY,order_id TEXT NOT NULL); CREATE INDEX IF NOT EXISTS ejh_return_links_order ON ejh_return_links(order_id)`)
+		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS ejh_return_links(trade_id TEXT PRIMARY KEY,order_id TEXT NOT NULL); CREATE INDEX IF NOT EXISTS ejh_return_links_order ON ejh_return_links(order_id);
+ CREATE TABLE IF NOT EXISTS ejh_received_returns(trade_id TEXT PRIMARY KEY,order_id TEXT NOT NULL);
+ CREATE INDEX IF NOT EXISTS ejh_received_returns_order ON ejh_received_returns(order_id)`)
 	}
 	if err == nil {
 		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS ejh_operation_claims(scope TEXT PRIMARY KEY,operation_id TEXT NOT NULL UNIQUE)`)
@@ -90,6 +92,20 @@ func (s *Store) SaveEJHSettings(v ejh.Settings, secret string) (ejh.Settings, er
 func (s *Store) EJHPut(kind, id string, value any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if kind == "trade" {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err = lockProCardAdmission(tx); err != nil {
+			return err
+		}
+		if err = s.ejhPutTx(tx, kind, id, value); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 	if op, ok := value.(ejh.Operation); kind == "operation" && ok {
 		tx, err := s.db.Begin()
 		if err != nil {
@@ -313,15 +329,37 @@ func (s *Store) ImportEJHCard(remote ejh.Card, enabled bool) (result gptpay.Card
 	return s.SaveGPTPayCard(card, secret)
 }
 func (s *Store) EJHSaveTrade(cardID string, t ejh.Trade) error {
+	return s.EJHSaveTrades(cardID, []ejh.Trade{t})
+}
+
+// Save a complete card collection atomically; readers cannot see half a batch.
+func (s *Store) EJHSaveTrades(cardID string, trades []ejh.Trade) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = lockProCardAdmission(tx); err != nil {
+		return err
+	}
+	for _, t := range trades {
+		if err = s.ejhSaveTradeTx(tx, cardID, t); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ejhSaveTradeTx(tx *sql.Tx, cardID string, t ejh.Trade) error {
 	if t.TradeNo == "" || t.OrderNo == "" || t.Type == "" {
 		return fmt.Errorf("交易缺少流水号、订单号或类型，不能安全去重")
 	}
 	id := EJHID("trade", t.OrderNo+"|"+t.TradeNo+"|"+t.Type)
 	v := ejh.TradeRecord{ID: id, CardID: cardID, Trade: t, SyncedAt: time.Now()}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	var sealed string
-	e := s.db.QueryRow(`SELECT sealed FROM ejh_records WHERE kind='trade' AND id=?`, id).Scan(&sealed)
+	e := tx.QueryRow(`SELECT sealed FROM ejh_records WHERE kind='trade' AND id=?`, id).Scan(&sealed)
 	var changedFrom *ejh.TradeRecord
 	if e != nil && !errors.Is(e, sql.ErrNoRows) {
 		return e
@@ -343,11 +381,6 @@ func (s *Store) EJHSaveTrade(cardID string, t ejh.Trade) error {
 			v.Evidence = "供应商流水变更，原确认需复核：" + old.Evidence
 		}
 	}
-	tx, e := s.db.Begin()
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback()
 	if changedFrom != nil {
 		if e = s.ejhPutTx(tx, "match_audit", EJHID("audit", id+time.Now().String()), map[string]any{"action": "supplier_changed", "before": changedFrom, "after": v, "at": time.Now()}); e != nil {
 			return e
@@ -356,7 +389,7 @@ func (s *Store) EJHSaveTrade(cardID string, t ejh.Trade) error {
 	if e = s.ejhPutTx(tx, "trade", id, v); e != nil {
 		return e
 	}
-	return tx.Commit()
+	return nil
 }
 func ejhSaveCaseTx(tx *sql.Tx, o gptpay.Order) error {
 	var raw string
@@ -751,5 +784,30 @@ func (s *Store) ejhPutTx(tx *sql.Tx, kind, id string, value any) error {
 		return e
 	}
 	_, e = tx.Exec(`INSERT INTO ejh_records VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET sealed=excluded.sealed,updated_at=excluded.updated_at`, kind, id, sealed, formatTime(time.Now()))
+	if e == nil && kind == "trade" {
+		var t ejh.TradeRecord
+		if e = json.Unmarshal(raw, &t); e == nil {
+			e = saveEJHReceivedReturnTx(tx, t)
+		}
+	}
 	return e
+}
+
+// Maintain the admission index in the same transaction as the monetary evidence.
+// A changed/unconfirmed return immediately restores its order's occupancy.
+func saveEJHReceivedReturnTx(tx *sql.Tx, t ejh.TradeRecord) error {
+	// Live evidence supersedes an imported summary, including corrections or
+	// removal of a previously confirmed association.
+	if _, err := tx.Exec(`DELETE FROM ejh_received_returns WHERE trade_id='transfer:' || ?
+ OR trade_id IN (SELECT 'transfer:' || order_id FROM ejh_received_returns WHERE trade_id=?)`, t.OrderID, t.ID); err != nil {
+		return err
+	}
+	received := t.Confirmed && t.OrderID != "" && ejh.ReturnReceived(t.Trade) &&
+		ejh.Positive(t.Amount) == nil && ejh.ValidCurrency(t.Currency)
+	if !received {
+		_, err := tx.Exec("DELETE FROM ejh_received_returns WHERE trade_id=?", t.ID)
+		return err
+	}
+	_, err := tx.Exec(`INSERT INTO ejh_received_returns VALUES(?,?) ON CONFLICT(trade_id) DO UPDATE SET order_id=excluded.order_id`, t.ID, t.OrderID)
+	return err
 }

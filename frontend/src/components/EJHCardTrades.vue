@@ -4,7 +4,7 @@ import { api } from '../api'
 import { tradeKinds } from '../ejh'
 import { formatTime } from '../utils'
 const emit=defineEmits(['updated'])
-const opened=ref(false),busy=ref(false),error=ref(''),card=ref(null),rows=ref([]),page=ref(1),hasMore=ref(false),queriedAt=ref(''),applied=ref(null)
+const opened=ref(false),busy=ref(false),error=ref(''),card=ref(null),rows=ref([]),page=ref(1),hasMore=ref(false),queriedAt=ref(''),applied=ref(null),cached=ref(false)
 const dates=reactive({start:'',end:''})
 const requestedPage=ref(1)
 const date=value=>value.toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})
@@ -24,7 +24,7 @@ async function query(nextPage=1,newSearch=false){
  try{
   const result=await api('/api/ejh/cards/'+encodeURIComponent(card.value.id)+'/trades',{method:'POST',body:{start:range.start,end:range.end,page:nextPage},signal:controller.signal})
   if(disposed)return
-  rows.value=result.items||[];page.value=result.page;hasMore.value=result.has_more;queriedAt.value=result.queried_at;applied.value={start:range.start,end:range.end};emit('updated')
+  cached.value=!!result.cached;rows.value=result.items||[];page.value=result.page;hasMore.value=result.has_more;queriedAt.value=result.queried_at;applied.value={start:range.start,end:range.end};emit('updated')
  }catch(e){if(!disposed)error.value=e.message}finally{busy.value=false}
 }
 onBeforeUnmount(()=>{disposed=true;controller?.abort()})
@@ -34,10 +34,10 @@ defineExpose({open})
 <div class="modal-heading"><h2>银行卡交易明细</h2><button type="button" class="btn ghost" :disabled="busy" @click="opened=false">关闭</button></div>
 <p>{{card.local?.name||'EJH 卡片'}} · {{card.remote?.cardNo}} · {{card.remote?.orderNo}}</p>
 <form class="trade-dates" @submit.prevent="query(1,true)"><label class="field"><span>开始日期</span><input v-model="dates.start" type="date" required :disabled="busy"/></label><label class="field"><span>结束日期</span><input v-model="dates.end" type="date" required :disabled="busy"/></label><button class="btn primary" :disabled="busy">{{busy?'正在查询…':'查询交易明细'}}</button></form>
-<p class="muted">默认查询最近 30 天，每次最多 90 天、每页 100 条。仅查询当前银行卡；授权、清算、撤销、退款和销卡流水分别展示。</p>
-<p v-if="busy" role="status">正在向 EJH 查询第 {{requestedPage}} 页交易明细，请稍候…</p><p v-if="error" role="alert" class="danger-text">{{error}}{{applied?'；下方保留上次成功查询的结果。':''}}</p>
-<p v-if="applied">显示 {{applied.start}} 至 {{applied.end}} · 第 {{page}} 页 · 本页 {{rows.length}} 条 · 查询于 {{formatTime(queriedAt)}}</p>
-<div class="table-shell"><table><thead><tr><th>流水 / 类型</th><th>入账状态</th><th>刷卡金额</th><th>交易 / 结算金额</th><th>商户 / 时间</th><th>其他明细</th></tr></thead><tbody><tr v-for="t in rows" :key="t.tradeNo+':'+t.tradeType"><td>{{t.tradeNo}}<small>{{tradeKinds[t.tradeType]||t.tradeType}}</small></td><td>{{t.tradeStatus==='2'?'已入账':t.tradeStatus==='1'?'待入账':'状态未知'}}</td><td>{{amount(t.cardAmount,t.cardCurrency)}}</td><td>{{amount(t.tradeAmount,t.tradeCurrency)}}<small>结算 {{amount(t.billAmount,t.billCurrency)}}</small></td><td>{{t.collectionName||'商户未提供'}}<small>交易 {{t.tradeTime||'—'}}</small><small>记账 {{t.createdAt||'—'}}</small></td><td><details><summary>展开</summary><p>授权码 {{t.authCode||'—'}}<br>汇率 {{t.buyTradeBankRate||'—'}}<br>退款金额字段 {{t.refundBuyPrice||'未提供'}}<br>退款去向 {{t.refundTag==='1'?'账户':t.refundTag?'未知':'卡片'}}<br>备注 {{t.extInfoyx||'—'}}<br>商户地址 {{t.collectionAddress||'—'}}</p></details></td></tr></tbody></table></div>
+<p v-if="card.remote?.status==='2'" class="muted">此卡已销卡，仅查看已保存的历史交易，不再请求卡台更新。</p><p class="muted">默认查询最近 30 天，每次最多 90 天、每页 100 条。仅查询当前银行卡；授权、清算、撤销、退款和销卡流水分别展示。</p>
+<p v-if="busy" role="status">正在读取第 {{requestedPage}} 页交易明细，请稍候…</p><p v-if="error" role="alert" class="danger-text">{{error}}{{applied?'；下方保留上次成功查询的结果。':''}}</p>
+<p v-if="applied">显示 {{applied.start}} 至 {{applied.end}} · 第 {{page}} 页 · 本页 {{rows.length}} 条 · {{cached?'历史保存于':'查询于'}} {{formatTime(queriedAt)}}</p>
+<div class="table-shell"><table><thead><tr><th>流水 / 类型</th><th>入账状态</th><th>刷卡金额</th><th>交易 / 结算金额</th><th>商户 / 时间</th><th>其他明细</th></tr></thead><tbody><tr v-for="t in rows" :key="t.tradeNo+':'+t.tradeType"><td>{{t.tradeNo}}<small>{{tradeKinds[t.tradeType]||t.tradeType}}</small></td><td>{{t.tradeStatus==='2'?'已入账':t.tradeStatus==='1'?'待入账':'状态未知'}}<small v-if="t.tradeType==='2'&&['1','2'].includes(t.tradeStatus)">授权已撤销，按回款识别；入账状态保留卡台原值</small></td><td>{{amount(t.cardAmount,t.cardCurrency)}}</td><td>{{amount(t.tradeAmount,t.tradeCurrency)}}<small>结算 {{amount(t.billAmount,t.billCurrency)}}</small></td><td>{{t.collectionName||'商户未提供'}}<small>交易 {{t.tradeTime||'—'}}</small><small>记账 {{t.createdAt||'—'}}</small></td><td><details><summary>展开</summary><p>授权码 {{t.authCode||'—'}}<br>汇率 {{t.buyTradeBankRate||'—'}}<br>退款金额字段 {{t.refundBuyPrice||'未提供'}}<br>退款去向 {{t.refundTag==='1'?'账户':t.refundTag?'未知':'卡片'}}<br>备注 {{t.extInfoyx||'—'}}<br>商户地址 {{t.collectionAddress||'—'}}</p></details></td></tr></tbody></table></div>
 <p v-if="applied&&!rows.length&&!busy">本页没有交易记录{{page>1?'，可返回上一页':'，可调整日期后查询'}}。</p>
 <div class="panel-actions"><button class="btn ghost" :disabled="busy||page<=1" @click="query(page-1)">上一页</button><span>第 {{page}} 页</span><button class="btn ghost" :disabled="busy||!hasMore" @click="query(page+1)">下一页</button></div>
 </section></div></Teleport></template>

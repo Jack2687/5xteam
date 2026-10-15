@@ -69,10 +69,7 @@ func (s *Server) proAccountListWithCards(items []model.MailAccountProfile) ([]pr
 		}
 		if item.ProPushStartedAt != nil {
 			row.PushElapsedMinutes = max(0, int64(time.Since(*item.ProPushStartedAt)/time.Minute))
-			if config.ForceMergeEnabled {
-				deadline := item.ProPushStartedAt.Add(time.Duration(config.ForceMergeMinutes) * time.Minute)
-				row.ForceMergeDeadline = &deadline
-			}
+			row.ForceMergeDeadline = item.ProPushDeadline()
 		}
 		row.ProAuto.Error = row.ProAuto.DisplayError()
 		if order, ok := orders[strings.ToLower(item.Email)]; ok && ((item.ProAuto.ID == "" && item.ProManualStages["recharge"].ID == "") || (order.ID == item.ProAuto.OrderID && item.ProAuto.Status != "running")) {
@@ -795,10 +792,7 @@ func (s *Server) performProPush(ctx context.Context, email string) (out model.Ma
 	}()
 	if _, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
 		p.PushStatus, p.ProLastError = "running", ""
-		if p.ProPushStartedAt == nil {
-			now := time.Now()
-			p.ProPushStartedAt = &now
-		}
+
 	}); err != nil {
 		return profile, err
 	}
@@ -849,6 +843,8 @@ func (s *Server) performProPush(ctx context.Context, email string) (out model.Ma
 	}
 	out, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
 		p.PushProvider, p.PushStatus = "sub2", "completed"
+		ref := model.ProDownstream(v)
+		p.ProPushDownstream = &ref
 		if p.ProMigration != nil {
 			p.ProMigration.Downstream = model.ProDownstream(v)
 		}

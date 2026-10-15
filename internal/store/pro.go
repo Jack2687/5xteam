@@ -210,8 +210,13 @@ func (s *Store) UpdateProAccount(email string, mutate func(*model.MailAccountPro
 	wasConfirmed := p.TransferStatus == "completed" && p.ProMergeConfirmedSource != ""
 	wasRemoved := p.RemoveStatus == "completed" || p.RemoveStatus == "team_removed"
 	previousProvider, previousSub2ID := p.PushProvider, p.Sub2AccountID
+	previousPushStatus := p.PushStatus
 	if mutate != nil {
 		mutate(&p)
+	}
+	if previousPushStatus != "completed" && p.PushStatus == "completed" && p.ProPushStartedAt == nil {
+		now := time.Now()
+		p.ProPushStartedAt = &now
 	}
 	if p.PushProvider != previousProvider || p.Sub2AccountID != previousSub2ID || p.VM2 != nil {
 		p.ClearProCostSnapshot()

@@ -95,6 +95,13 @@ func Evaluate(c Config, s Snapshot, tasks []Task, limits Limits, confirmations, 
 		return block("推送设置的单账号并发无效")
 	}
 	d.DemandKnown = true
+	d.ForceMerge = ForceMergeSummary(c, s, tasks, now)
+	if d.ForceMerge.Triggered {
+		d.ForceMergeNeed = len(d.ForceMerge.Sources)
+	}
+	if d.ForceMerge.Unknown > 0 {
+		d.Warnings = append(d.Warnings, "部分 EJH 账号时限或首次推送记录不明，已排除，不按 0 分钟触发")
+	}
 	for _, a := range s.Accounts {
 		if a.ExpiresAt == nil || !a.Ready || len(a.Windows) == 0 {
 			continue
@@ -125,12 +132,15 @@ func Evaluate(c Config, s Snapshot, tasks []Task, limits Limits, confirmations, 
 	if c.TimeEnabled && !timeWithinHorizon {
 		d.Warnings = append(d.Warnings, "预计就绪或补后目标超出预测上限，暂停时间侧新增；并发和最低备用仍独立生效")
 	}
+	base, coverage, ok, capped := forecast(c, s, nil, 0, newSlots, lead, now, 0)
+	d.Coverage = coverage
+	if ok {
+		d.SupplyMinutes = &base
+		d.SupplyCapped = capped
+	}
 	if c.TimeEnabled && timeWithinHorizon {
-		base, coverage, ok, capped := forecast(c, s, tasks, 0, newSlots, lead, now, 0)
-		d.Coverage = coverage
+		base, _, ok, _ := forecast(c, s, tasks, 0, newSlots, lead, now, 0)
 		if ok {
-			d.SupplyMinutes = &base
-			d.SupplyCapped = capped
 			if base < lead {
 				d.Warnings = append(d.Warnings, "到货前可能出现供给缺口；新号不能消除已经发生的等待")
 			}
@@ -164,28 +174,7 @@ func Evaluate(c Config, s Snapshot, tasks []Task, limits Limits, confirmations, 
 	if len(s.Accounts) == 0 && c.EmptyGroupCount > 0 {
 		d.EmptyGroupNeed = max(0, c.EmptyGroupCount-groupInflight)
 	}
-	// This optional ordinary-purchase guard never overrides confirmed pressure
-	// or the explicitly configured reserve. Rates are trusted by forecast above.
-	if c.MinNewUsePercent > 0 && s.LifetimeMinutes > 0 && d.SupplyMinutes != nil && d.TimeNeed > 0 {
-		rates := map[int64]float64{}
-		for _, a := range s.Accounts {
-			if a.Ready && a.Plan == s.NewPlan {
-				for _, w := range a.Windows {
-					rates[w.Seconds] += w.Rate
-				}
-			}
-		}
-		peak := 0.0
-		for _, rate := range rates {
-			peak = math.Max(peak, rate)
-		}
-		limit := max(0, int(math.Floor(peak*float64(s.LifetimeMinutes)/float64(c.MinNewUsePercent)-float64(futureCapacity)/float64(newSlots)))-timely)
-		if d.TimeNeed > limit {
-			d.TimeNeed = limit
-			d.Warnings = append(d.Warnings, "按推送等待时限与最低预计使用比例限制普通补货；持续并发和最低备用仍独立生效")
-		}
-	}
-	need := max(d.TimeNeed, d.ConcurrencyNeed, d.ReserveNeed, d.EmptyGroupNeed)
+	need := max(d.TimeNeed, d.ConcurrencyNeed, d.ReserveNeed, d.EmptyGroupNeed, d.ForceMergeNeed)
 	if need == 0 {
 		if len(s.Accounts) == 0 && c.EmptyGroupCount > 0 && groupInflight > 0 {
 			return block("空分组启动数量已由同组在途覆盖，等待原任务入组；结果未知仍保留占用")
@@ -220,7 +209,7 @@ func Evaluate(c Config, s Snapshot, tasks []Task, limits Limits, confirmations, 
 	if d.Suggested == 0 {
 		return block("达到在途、账号池、小时／日数量或预算上限")
 	}
-	d.Reason = "时间、并发、备用与空分组净缺口取最大值，各规则已扣除适用在途"
+	d.Reason = "时间、并发、备用、空分组与强制合并接替净缺口取最大值，各规则已扣除适用在途"
 	if d.EmptyGroupOnly() {
 		d.Reason = "监控分组为 0 个账号，按空分组启动数量补货；已扣除同组全部在途"
 	}
@@ -282,9 +271,7 @@ func forecast(c Config, s Snapshot, tasks []Task, extra, slots int, lead float64
 		if !good {
 			continue
 		}
-		if s.NewPlan == "" || s.NewPlan != a.Plan {
-			return 0, 0, false, false
-		}
+
 		covered++
 		if plan != "" && plan != a.Plan {
 			return 0, 0, false, false
@@ -331,18 +318,23 @@ func forecast(c Config, s Snapshot, tasks []Task, extra, slots int, lead float64
 	}
 	add := func(at float64) {
 		p := supply{a: Account{Ready: true, Capacity: slots}, arrive: at, remaining: map[int64]float64{}, reset: map[int64]int64{}}
-		if s.LifetimeMinutes > 0 {
-			expires := now.Add(time.Duration((at + float64(s.LifetimeMinutes)) * float64(time.Minute)))
-			p.a.ExpiresAt = &expires
-		}
 		for _, w := range template {
 			p.remaining[w.Seconds] = 100
 			p.reset[w.Seconds] = now.Add(time.Duration(at*float64(time.Minute))).Unix() + w.Seconds
 		}
 		pool = append(pool, p)
 	}
+	allowNew := s.NewPlan != ""
+	for _, a := range s.Accounts {
+		if a.Ready && first(a.PurchasePlan, a.Plan) != s.NewPlan {
+			allowNew = false
+		}
+	}
+	if extra > 0 && !allowNew {
+		return 0, coverage, false, false
+	}
 	for _, t := range tasks {
-		if t.Predictable() && t.GroupID == s.GroupID && t.Binding == s.Binding && t.Plan == s.NewPlan {
+		if allowNew && t.Predictable() && t.GroupID == s.GroupID && t.Binding == s.Binding && t.Plan == s.NewPlan {
 			add(math.Max(0, t.ETA.Sub(now).Minutes()))
 		}
 	}

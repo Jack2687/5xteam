@@ -27,6 +27,7 @@ type ProTransferFile struct {
 	Accounts   []ProTransferAccount `json:"accounts"`
 }
 type ProTransferOrder struct {
+	ReturnConfirmed   bool            `json:"return_confirmed,omitempty"`
 	CardType          string          `json:"card_type,omitempty"`
 	OccupancyReleased *bool           `json:"occupancy_released,omitempty"`
 	Order             gptpay.Order    `json:"order"`
@@ -133,7 +134,7 @@ func (s *Store) ExportProAccounts(emails []string, downstream model.ProDownstrea
 			entry.VM2Target = &target
 			entry.Downstream = model.ProDownstream(model.ProSettings{Provider: "vm2api", VM2API: target.VM2API})
 		}
-		rows, e := tx.Query(`SELECT o.profile,o.encrypted_snapshot,COALESCE(k.card_type,'other'),EXISTS(SELECT 1 FROM pro_card_order_releases r WHERE r.order_id=o.id) FROM gptpay_orders o LEFT JOIN pro_card_usage u ON u.order_id=o.id LEFT JOIN pro_card_types k ON k.card_key=u.card_key WHERE o.email=? ORDER BY o.created_at,o.id`, email)
+		rows, e := tx.Query(`SELECT o.profile,o.encrypted_snapshot,COALESCE(k.card_type,'other'),EXISTS(SELECT 1 FROM pro_card_order_releases r WHERE r.order_id=o.id),EXISTS(SELECT 1 FROM ejh_received_returns r WHERE r.order_id=o.id) FROM gptpay_orders o LEFT JOIN pro_card_usage u ON u.order_id=o.id LEFT JOIN pro_card_types k ON k.card_key=u.card_key WHERE o.email=? ORDER BY o.created_at,o.id`, email)
 		if e != nil {
 			return out, e
 		}
@@ -141,8 +142,11 @@ func (s *Store) ExportProAccounts(emails []string, downstream model.ProDownstrea
 		for rows.Next() {
 			var order ProTransferOrder
 			var released bool
-			if e = rows.Scan(&raw, &sealed, &order.CardType, &released); e != nil {
+			if e = rows.Scan(&raw, &sealed, &order.CardType, &released, &order.ReturnConfirmed); e != nil {
 				break
+			}
+			if order.CardType == "ejh" {
+				released = order.ReturnConfirmed
 			}
 			order.OccupancyReleased = &released
 			if e = json.Unmarshal([]byte(raw), &order.Order); e != nil {
@@ -559,6 +563,16 @@ func (s *Store) ImportProAccount(entry ProTransferAccount, exportedAt time.Time,
 		}
 		if released && o.Order.Status == "success" {
 			if _, err = tx.Exec(`INSERT OR IGNORE INTO pro_card_order_releases VALUES(?,?)`, o.Order.ID, formatTime(now)); err != nil {
+				return result, err
+			}
+		}
+		// Old files only carry removal-based releases; they cannot prove a return.
+		if _, err = tx.Exec(`DELETE FROM ejh_received_returns WHERE trade_id=?`, "transfer:"+o.Order.ID); err != nil {
+			return result, err
+		}
+		if o.ReturnConfirmed && kind == "ejh" && o.Order.Status == "success" {
+			if _, err = tx.Exec(`INSERT OR IGNORE INTO ejh_received_returns SELECT ?,?
+ WHERE NOT EXISTS(SELECT 1 FROM ejh_return_links WHERE order_id=?)`, "transfer:"+o.Order.ID, o.Order.ID, o.Order.ID); err != nil {
 				return result, err
 			}
 		}

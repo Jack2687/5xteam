@@ -248,7 +248,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(catalogTimer); catalogCont
         <div class="target-summary wide"><strong>{{ selectedAdmin?.label || selectedAdmin?.email || '尚未选择母号' }}</strong><span>{{ selectedAdmin?.team_account_id || '选择后显示目标 Team ID' }}</span></div>
 </div>
             <div class="config-divider"><h4>推送等待时限</h4><p>从首次推送开始计时，重试和重启不清零。</p></div>
-            <div class="settings-fields">        <label class="toggle-row wide"><div><strong>推送超时执行原空间四步流程</strong><small>从首次推送开始计时，推送成功后触发。重试和重启不清零，停止、暂停和待确认任务除外。合并仅标记待回款，不调用退款接口。</small></div><input v-model="automation.force_merge_enabled" type="checkbox"/><i></i></label>
+            <div class="settings-fields">        <label class="toggle-row wide"><div><strong>推送超时执行原空间四步流程</strong><small>开通时保存到账号，修改仅影响新账号；从首次成功推送开始计时。重试和重启不清零，停止、暂停和待确认任务除外。合并仅标记待回款，不调用退款接口。</small></div><input v-model="automation.force_merge_enabled" type="checkbox"/><i></i></label>
         <label class="field"><span>首次推送后最多等待（分钟）</span><input v-model.number="automation.force_merge_minutes" type="number" min="1" max="525600" :required="automation.force_merge_enabled"/></label>
 </div>
           </section>

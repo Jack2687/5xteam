@@ -4,11 +4,12 @@ import (
 	"chatgpt-space-merge/internal/ejh"
 	"chatgpt-space-merge/internal/store"
 	"net/http"
+	"sort"
 	"time"
 )
 
-// Query only the selected issuer card. Each page is a supplier read; saving it
-// retains the existing attribution and invalidates changed confirmations.
+// Detail pagination is read-only. Complete collections are saved by the
+// background updater so browsing a partial page cannot change attribution.
 func (s *Server) queryEJHCardTrades(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Start string `json:"start"`
@@ -34,6 +35,40 @@ func (s *Server) queryEJHCardTrades(w http.ResponseWriter, r *http.Request) {
 	var card ejh.CardRecord
 	if err := s.store.EJHGet("card", r.PathValue("id"), &card); err != nil || card.Remote.OrderNo == "" {
 		writeAPI(w, 404, nil, "未找到绑定卡台的银行卡")
+		return
+	}
+	if card.Remote.Status == "2" {
+		records, err := store.EJHRecords[ejh.TradeRecord](s.store, "trade")
+		if err != nil {
+			writeAPI(w, 500, nil, err.Error())
+			return
+		}
+		items := []ejh.Trade{}
+		for _, t := range records {
+			at := ejh.TradeAt(t.Trade)
+			if t.CardID == card.ID && !at.Before(start) && !at.After(end) {
+				v := t.Trade
+				v.Number = maskEJH(v.Number)
+				items = append(items, v)
+			}
+		}
+		sort.Slice(items, func(i, j int) bool {
+			a, b := ejh.TradeAt(items[i]), ejh.TradeAt(items[j])
+			if a.Equal(b) {
+				return items[i].TradeNo < items[j].TradeNo
+			}
+			return a.After(b)
+		})
+		offset := (in.Page - 1) * 100
+		if offset > len(items) {
+			offset = len(items)
+		}
+		limit := offset + 100
+		if limit > len(items) {
+			limit = len(items)
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeAPI(w, 200, map[string]any{"items": items[offset:limit], "page": in.Page, "has_more": limit < len(items), "queried_at": card.SyncedAt, "cached": true}, "")
 		return
 	}
 	cfg, key, err := s.ejhConfig()
@@ -62,12 +97,8 @@ func (s *Server) queryEJHCardTrades(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[id] = true
 	}
-	for i, t := range out.Trades {
-		if err = s.store.EJHSaveTrade(card.ID, t); err != nil {
-			writeAPI(w, 500, nil, "保存交易明细失败，请重试查询")
-			return
-		}
-		out.Trades[i].Number = maskEJH(t.Number)
+	for i := range out.Trades {
+		out.Trades[i].Number = maskEJH(out.Trades[i].Number)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeAPI(w, 200, map[string]any{"items": out.Trades, "page": in.Page, "has_more": len(out.Trades) == 100, "queried_at": time.Now()}, "")

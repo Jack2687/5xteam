@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { ref, reactive } from 'vue'
-import { accountAmounts } from '../src/ejh-account-amounts.js'
+import { accountAmounts, cardAmounts } from '../src/ejh-account-amounts.js'
 
 const charge={type:'4',status:'2',card_amount:'100.30',card_currency:'USD'}
 const returned=(id,amount,currency='USD',extra={})=>({id,confirmed:true,confirmed_amount:amount,confirmed_currency:currency,trade:{tradeType:'5',tradeStatus:'2'},...extra})
@@ -21,7 +21,7 @@ assert.equal(accountAmounts({charge,returns:[returned('a','1','EUR')]}).differen
 assert.equal(accountAmounts({charge,returns:[returned('a','bad')]}).invalid,true)
 assert.equal(accountAmounts({charge,returns:[returned('a','bad')]}).difference,null)
 for(const amount of ['-1','1e2','NaN','9999999999999','0.0000001'])assert.equal(accountAmounts({charge:{...charge,card_amount:amount}}).paid,null)
-const unconfirmed=accountAmounts({charge,returns:[returned('a','10','USD',{confirmed:false}),returned('b','10','USD',{trade:{tradeType:'2',tradeStatus:'1'}}),returned('c','99','USD',{trade:{tradeType:'17',tradeStatus:'2'}})]})
+const unconfirmed=accountAmounts({charge,returns:[returned('a','10','USD',{confirmed:false}),returned('b','10','USD',{trade:{tradeType:'5',tradeStatus:'1'}}),returned('c','99','USD',{trade:{tradeType:'17',tradeStatus:'2'}})]})
 assert.equal(unconfirmed.pending,2)
 assert.equal(unconfirmed.returned.length,0)
 assert.equal(unconfirmed.difference,'100.30')
@@ -49,3 +49,26 @@ await f.query(3);assert.equal(calls.length,count,'duplicate request admitted')
 unmounts.forEach(fn=>fn());assert.equal(calls.at(-1).options.signal.aborted,true)
 release();await pending;assert.equal(f.page.value,1,'disposed dialog was updated')
 console.log('Passed: precise payment/return/difference, missing/pending/mixed currency, duplicate and closure exclusions; per-card query, pagination date retention, error retention, progress, duplicate requests and disposal')
+
+assert.equal(accountAmounts({charge:{...charge,type:'1',status:'1'}}).difference,'100.30')
+const ct=(id,type,amount,currency='PHP',extra={})=>({id,card_id:'c',trade:{tradeNo:id,tradeType:type,tradeStatus:'2',cardAmount:amount,cardCurrency:currency,...extra}})
+const auth=ct('auth','1','100.30','PHP',{authCode:'A',tradeStatus:'1'}),clearing=ct('clear','4','100.20','PHP',{authCode:'A'}),refund=ct('refund','5','97.10','PHP',{authCode:'A'})
+const cm=cardAmounts({id:'c'},[auth,clearing,refund,refund,ct('closure','17','1000'),ct('failed','3','600'),ct('usd','1','0.30','USD'),ct('eur','4','0.10','EUR'),{...auth,card_id:'other'}])
+assert.deepEqual(cm.rows.map(({currency,paid,returned,difference})=>({currency,paid,returned,difference})),[{currency:'EUR',paid:'0.10',returned:'0.00',difference:'0.10'},{currency:'PHP',paid:'100.20',returned:'97.10',difference:'3.10'},{currency:'USD',paid:'0.30',returned:'0.00',difference:'0.30'}])
+assert.equal(cm.fee,'0.50 USDT')
+const actualPay=ct('actual-pay','1','5794.64','PHP',{tradeStatus:'1',authCode:'259562'})
+const reversal=ct('actual-return','2','5780.87','PHP',{tradeStatus:'1',authCode:'259562'})
+assert.equal(cardAmounts({id:'c'},[actualPay,reversal]).rows[0].difference,'13.77')
+assert.equal(cardAmounts({id:'c'},[actualPay,reversal]).pending,0)
+assert.equal(accountAmounts({charge:{type:'1',status:'1',card_amount:'5794.64',card_currency:'PHP'},returns:[returned('actual-return','5780.87','PHP',{trade:reversal.trade})]}).difference,'13.77')
+assert.equal(cardAmounts({id:'c'},[auth]).rows[0].authorization,true)
+assert.equal(cardAmounts({id:'c'},[auth,ct('bad','5','','PHP')]).rows[0].difference,null)
+assert.equal(cardAmounts({id:'c'},[auth,ct('pending','5','3','PHP',{tradeStatus:'1'})]).pending,1)
+const early=ct('early','2','97.10','PHP',{authCode:'A',tradeTime:'2026-10-15T12:00:00+08:00'}),late=ct('late','5','96.00','PHP',{authCode:'A',tradeTime:'2026-10-15T13:00:00+08:00'})
+for(const rows of [[late,early],[early,late]])assert.equal(cardAmounts({id:'c'},[auth,...rows]).rows[0].returned,'97.10','return dedup must not depend on API ordering')
+assert.equal(cardAmounts({id:'c'},[auth,early,{...late,confirmed:true,payment_order_id:'order'}]).rows[0].returned,'96.00','preserve the return actually associated with the account')
+const view=readFileSync(new URL('../src/components/EJHManagementView.vue',import.meta.url),'utf8')
+assert.equal(view.includes('流水同步'),false)
+assert.equal(view.includes('matchForm'),false)
+assert.equal((view.match(/<EJHCardAmounts /g)||[]).length,2)
+console.log('Passed: card totals, clearing/auth deduplication, per-currency differences, fixed fee and retired manual controls')

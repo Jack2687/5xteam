@@ -120,6 +120,10 @@ func Open(dataDir string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := s.EJHReconcile(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -552,6 +556,8 @@ func preserveMailPlanCheck(profile *model.MailAccountProfile, old model.MailAcco
 func preserveProProfile(profile *model.MailAccountProfile, old model.MailAccountProfile) {
 	profile.ProRestockTaskID, profile.ProRestockTargetID = old.ProRestockTaskID, old.ProRestockTargetID
 	profile.ProPushStartedAt = old.ProPushStartedAt
+	profile.ProPushTimeoutEnabled, profile.ProPushTimeoutMinutes = old.ProPushTimeoutEnabled, old.ProPushTimeoutMinutes
+	profile.ProPushDownstream = old.ProPushDownstream
 	profile.ProForceMergeNextAt, profile.ProForceMergeAttempts = old.ProForceMergeNextAt, old.ProForceMergeAttempts
 	profile.ProAuto = old.ProAuto
 	profile.ProMigration = old.ProMigration
