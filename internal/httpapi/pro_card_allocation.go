@@ -15,6 +15,14 @@ func (s *Server) reserveProStartCard(ctx context.Context, email, selected string
 	defer s.proCardAdmissionMu.Unlock()
 	var card gptpay.Card
 	var secret gptpay.CardSecret
+	taskID, _ := ctx.Value(proRestockContextKey{}).(string)
+	if profile, _, e := s.store.MailAccountCredential(email); e != nil {
+		return card, secret, e
+	} else if profile.ProRestockTaskID != "" && profile.ProRestockTaskID != taskID {
+		return card, secret, fmt.Errorf("账号已由 Pro 自动补货领取，未购买新卡")
+	} else if (taskID != "" || enforceMaximum) && profile.ProAuto.StopRequested {
+		return card, secret, fmt.Errorf("用户已停止该账号流程，未自动购买新卡")
+	}
 	if err := ctx.Err(); err != nil {
 		return card, secret, err
 	}
@@ -78,6 +86,6 @@ func (s *Server) reserveProStartCard(ctx context.Context, email, selected string
 	if err = ctx.Err(); err != nil {
 		return card, secret, err
 	}
-	err = s.store.ReserveProCard(email, card.ID, enforceMaximum)
+	err = s.store.ReserveProCard(email, card.ID, enforceMaximum, taskID)
 	return card, secret, err
 }

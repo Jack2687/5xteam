@@ -85,6 +85,8 @@ type MailAccountProfile struct {
 	ProLastError               string                      `json:"pro_last_error,omitempty"`
 	ProWorkflowRunning         bool                        `json:"pro_workflow_running"`
 	ProAuto                    ProAutoState                `json:"pro_auto"`
+	ProRestockTaskID           string                      `json:"pro_restock_task_id,omitempty"`
+	ProRestockTargetID         string                      `json:"pro_restock_target_id,omitempty"`
 	ProMigration               *ProMigrationState          `json:"pro_migration,omitempty"`
 	ProManualStages            map[string]ProStageProgress `json:"pro_manual_stages,omitempty"`
 	ProPostMergeGroups         *ProPostMergeGroups         `json:"pro_post_merge_groups,omitempty"`
