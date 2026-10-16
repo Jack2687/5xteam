@@ -51,7 +51,7 @@ func TestProRestockEmptyStartupDispatchAcrossTicks(t *testing.T) {
 	}
 	// Busy work slots leave the whole startup batch durably reserved.
 	s.proMergeMu.Lock()
-	s.proMergeRunning = 1
+	s.proAutoRunning = 1
 	s.proMergeMu.Unlock()
 	tick()
 	tasks, err := st.ProRestockTasks()
@@ -85,7 +85,7 @@ func TestProRestockEmptyStartupDispatchAcrossTicks(t *testing.T) {
 		return errors.New("test stops before payment")
 	}}
 	s.proMergeMu.Lock()
-	s.proMergeRunning = 0
+	s.proAutoRunning = 0
 	s.proMergeMu.Unlock()
 	collectionErr = errors.New("monitor unavailable")
 	tick()
@@ -134,7 +134,7 @@ func TestProRestockEmptyStartupPauseCancelsReservation(t *testing.T) {
 		return restock.Snapshot{At: time.Now(), Valid: true, LoadValid: true, GroupID: 1, Binding: restockBinding(p), NewPlan: restockPlan(pay.Provider, pay.PlanCode, pay.Country, pay.CreditQuantity)}, nil
 	}
 	s.proMergeMu.Lock()
-	s.proMergeRunning = p.Concurrency
+	s.proAutoRunning = p.Concurrency
 	s.proMergeMu.Unlock()
 	if err = s.tickProRestock(context.Background(), true); err != nil {
 		t.Fatal(err)

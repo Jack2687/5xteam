@@ -20,7 +20,8 @@ func (s *Store) initializeEJH() error {
  CREATE TABLE IF NOT EXISTS ejh_card_links(card_key TEXT PRIMARY KEY,card_id TEXT NOT NULL,order_no TEXT NOT NULL UNIQUE);
  CREATE TABLE IF NOT EXISTS ejh_cases(id TEXT PRIMARY KEY,email TEXT NOT NULL,card_id TEXT NOT NULL,profile TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS ejh_cases_email ON ejh_cases(email);
- CREATE INDEX IF NOT EXISTS ejh_cases_card ON ejh_cases(card_id);`)
+ CREATE INDEX IF NOT EXISTS ejh_cases_card ON ejh_cases(card_id);
+ CREATE TABLE IF NOT EXISTS ejh_case_states(order_id TEXT PRIMARY KEY,state TEXT NOT NULL,reason TEXT NOT NULL,updated_at TEXT NOT NULL,revision INTEGER NOT NULL);`)
 	if err == nil {
 		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS ejh_return_links(trade_id TEXT PRIMARY KEY,order_id TEXT NOT NULL); CREATE INDEX IF NOT EXISTS ejh_return_links_order ON ejh_return_links(order_id);
  CREATE TABLE IF NOT EXISTS ejh_received_returns(trade_id TEXT PRIMARY KEY,order_id TEXT NOT NULL);
@@ -504,6 +505,10 @@ type ejhCaseQuery interface {
 }
 
 func (s *Store) ejhCasesQuery(q ejhCaseQuery, emails []string) ([]ejh.Case, error) {
+	overrides, err := ejhCaseStateOverrides(q)
+	if err != nil {
+		return nil, err
+	}
 	where := ""
 	args := []any{}
 	if emails != nil {
@@ -618,6 +623,11 @@ func (s *Store) ejhCasesQuery(q ejhCaseQuery, emails []string) ([]ejh.Case, erro
 				}
 				v.Amounts[t.Currency] = t.Amount
 			}
+		}
+		v.AutomaticState = v.State
+		v.StateOverride = overrides[v.ID]
+		if v.StateOverride != nil && ejh.ValidCaseState(v.StateOverride.State) {
+			v.State = v.StateOverride.State
 		}
 		out = append(out, v)
 	}

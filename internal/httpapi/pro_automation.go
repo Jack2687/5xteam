@@ -387,8 +387,9 @@ func (s *Server) runProAutomation(ctx context.Context, email string, unlock, can
 		s.proAutoMu.Unlock()
 	}()
 	var err error
-	// Share the existing Pro concurrency bound, but release it during quota waits.
-	release, err := s.proMergeSlot(ctx)
+	// Bound the active chain from login onward; persisted quota waits release it.
+	// The four-step merge additionally acquires its own independent limit.
+	release, err := s.proAutoSlot(ctx)
 	if err == nil {
 		defer release()
 	}

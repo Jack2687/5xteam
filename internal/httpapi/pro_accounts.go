@@ -666,6 +666,7 @@ func (s *Server) saveProSettings(w http.ResponseWriter, r *http.Request) {
 	input.ScheduledEnabled, input.MaxUnmerged, input.ScheduleIntervalSeconds = current.ScheduledEnabled, current.MaxUnmerged, current.ScheduleIntervalSeconds
 	input.EJHAutoOpen, input.EJHTemplateID, input.EJHDailyOpenLimit, input.EJHDailyAmountLimit = current.EJHAutoOpen, current.EJHTemplateID, current.EJHDailyOpenLimit, current.EJHDailyAmountLimit
 	input.ForceMergeEnabled, input.ForceMergeMinutes = current.ForceMergeEnabled, current.ForceMergeMinutes
+	input.MergeConcurrency = current.MergeConcurrency
 	now := time.Now()
 	input.LastQuotaSweepAt = current.LastQuotaSweepAt
 	if input.QuotaEnabled {
@@ -1166,6 +1167,11 @@ func (s *Server) performProMerge(ctx context.Context, email string) (out model.M
 		s.auditProEvent(firstProProfile(out, profile), "space_merge", status, v.Provider, message, details)
 	}()
 	if profile.SpaceMergedOnce && (profile.RemoveStatus == "completed" || (profile.VM2 != nil && profile.RemoveStatus == "team_removed")) {
+		release, err := s.proMergeSlot(ctx)
+		if err != nil {
+			return profile, err
+		}
+		defer release()
 		return s.finishProDownstream(ctx, profile)
 	}
 	// Only a started workflow is bound to its original Team. Preselected
@@ -1220,6 +1226,13 @@ func (s *Server) performProMerge(ctx context.Context, email string) (out model.M
 	}
 	unlockAdmin = sync.OnceFunc(unlockAdmin)
 	defer unlockAdmin()
+	// Wait for this Team first so same-Team queues do not consume the global
+	// merge allowance. Retain one slot through all four steps and downstream.
+	release, err := s.proMergeSlot(ctx)
+	if err != nil {
+		return profile, err
+	}
+	defer release()
 	adminSettings, err := s.settingsForAdmin(s.store.Settings(), admin)
 	if err != nil {
 		return profile, err

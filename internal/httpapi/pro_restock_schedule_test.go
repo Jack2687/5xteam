@@ -35,7 +35,7 @@ func TestProRestockScheduleCancelsPendingButTracksStarted(t *testing.T) {
 		return restock.Snapshot{At: time.Now(), Valid: true, LoadValid: true, GroupID: 1, Binding: restockBinding(p), NewPlan: restockPlan(pay.Provider, pay.PlanCode, pay.Country, pay.CreditQuantity), Accounts: accounts}, nil
 	}
 	s.proMergeMu.Lock()
-	s.proMergeRunning = p.Concurrency
+	s.proAutoRunning = p.Concurrency
 	s.proMergeMu.Unlock()
 	if err = s.tickProRestock(context.Background(), true); err != nil {
 		t.Fatal(err)

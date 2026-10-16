@@ -227,7 +227,7 @@ func (s *Server) restockTasks(snap restock.Snapshot, p model.ProSettings, c rest
 		tasks = append(tasks, t)
 	}
 	s.proMergeMu.Lock()
-	busy := s.proMergeRunning
+	busy := s.proAutoRunning
 	s.proMergeMu.Unlock()
 	s.proAutoMu.Lock()
 	jobs := len(s.proAutoJobs)
@@ -449,7 +449,7 @@ func (s *Server) dispatchProRestock(ctx context.Context, c restock.Config, p mod
 			return
 		}
 		s.proMergeMu.Lock()
-		busy := s.proMergeRunning
+		busy := s.proAutoRunning
 		s.proMergeMu.Unlock()
 		s.proAutoMu.Lock()
 		jobs := len(s.proAutoJobs)

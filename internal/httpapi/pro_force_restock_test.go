@@ -146,7 +146,7 @@ func TestForceRestockCommittedReplacementContinues(t *testing.T) {
 				return restock.Snapshot{At: time.Now(), Valid: true, LoadValid: true, GroupID: 1, Binding: restockBinding(p), NewPlan: restockPlan(pay.Provider, pay.PlanCode, pay.Country, pay.CreditQuantity), Accounts: accounts}, nil
 			}
 			s.proMergeMu.Lock()
-			s.proMergeRunning = 1
+			s.proAutoRunning = 1
 			s.proMergeMu.Unlock()
 			if err := s.tickProRestock(context.Background(), true); err != nil {
 				t.Fatal(err)
@@ -165,7 +165,7 @@ func TestForceRestockCommittedReplacementContinues(t *testing.T) {
 				return errors.New("stop fixture before payment")
 			}}
 			s.proMergeMu.Lock()
-			s.proMergeRunning = 0
+			s.proAutoRunning = 0
 			s.proMergeMu.Unlock()
 			if err = s.tickProRestock(context.Background(), true); err != nil {
 				t.Fatal(err)

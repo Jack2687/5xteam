@@ -352,7 +352,7 @@ func TestProQuotaTriggersDetachedMergeAndPreservesUncertainty(t *testing.T) {
 func TestProMergeConcurrencyLimitAndCancellation(t *testing.T) {
 	f := newProExecutionFixture(t)
 	v, _, _, _ := f.s.store.ProSettings()
-	v.Concurrency = 1
+	v.Concurrency, v.MergeConcurrency = 3, 1
 	if _, err := f.s.store.SaveProSettings(v, "", ""); err != nil {
 		t.Fatal(err)
 	}

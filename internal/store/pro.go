@@ -57,6 +57,12 @@ func normalizeProSettings(v *model.ProSettings) {
 	if v.Concurrency > 20 {
 		v.Concurrency = 20
 	}
+	if v.MergeConcurrency < 1 {
+		v.MergeConcurrency = 2
+	}
+	if v.MergeConcurrency > 20 {
+		v.MergeConcurrency = 20
+	}
 	normalizeSub2Settings(&v.Sub2)
 	v.Sub2.Provider = v.Provider
 	if v.CPA.StatusCheckIntervalSeconds < 10 {

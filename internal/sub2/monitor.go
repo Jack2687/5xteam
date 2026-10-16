@@ -13,6 +13,7 @@ import (
 
 // MonitorAccount deliberately excludes tokens and raw credential payloads.
 type MonitorAccount struct {
+	Type             string     `json:"type"`
 	ID               int64      `json:"id"`
 	Name             string     `json:"name"`
 	Platform         string     `json:"platform"`

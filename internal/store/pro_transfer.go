@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"chatgpt-space-merge/internal/ejh"
 	"chatgpt-space-merge/internal/gptpay"
 	"chatgpt-space-merge/internal/model"
 )
@@ -27,11 +28,12 @@ type ProTransferFile struct {
 	Accounts   []ProTransferAccount `json:"accounts"`
 }
 type ProTransferOrder struct {
-	ReturnConfirmed   bool            `json:"return_confirmed,omitempty"`
-	CardType          string          `json:"card_type,omitempty"`
-	OccupancyReleased *bool           `json:"occupancy_released,omitempty"`
-	Order             gptpay.Order    `json:"order"`
-	Snapshot          gptpay.Snapshot `json:"snapshot"`
+	CaseStateOverride *ejh.CaseStateOverride `json:"case_state_override,omitempty"`
+	ReturnConfirmed   bool                   `json:"return_confirmed,omitempty"`
+	CardType          string                 `json:"card_type,omitempty"`
+	OccupancyReleased *bool                  `json:"occupancy_released,omitempty"`
+	Order             gptpay.Order           `json:"order"`
+	Snapshot          gptpay.Snapshot        `json:"snapshot"`
 }
 type ProTransferAccount struct {
 	Profile      model.MailAccountProfile     `json:"profile"`
@@ -58,6 +60,10 @@ func (s *Store) ExportProAccounts(emails []string, downstream model.ProDownstrea
 		return out, err
 	}
 	defer tx.Rollback()
+	overrides, err := ejhCaseStateOverrides(tx)
+	if err != nil {
+		return out, err
+	}
 	seen := map[string]bool{}
 	for _, email := range emails {
 		email = strings.ToLower(strings.TrimSpace(email))
@@ -162,6 +168,7 @@ func (s *Store) ExportProAccounts(emails []string, downstream model.ProDownstrea
 			if order.Order.ID == entry.Profile.ProAuto.OrderID {
 				foundOrder = true
 			}
+			order.CaseStateOverride = overrides[order.Order.ID]
 			entry.Orders = append(entry.Orders, order)
 		}
 		if e == nil {
@@ -209,6 +216,11 @@ func ValidateProTransfer(file ProTransferFile) error {
 		orderIDs := map[string]bool{}
 		active := 0
 		for _, o := range a.Orders {
+			if v := o.CaseStateOverride; v != nil {
+				if o.CardType != "ejh" || (!ejh.ValidCaseState(v.State) && v.State != "") || strings.TrimSpace(v.Reason) == "" || len(v.Reason) > 2400 || v.UpdatedAt.IsZero() || v.Revision < 1 {
+					return errors.New("迁移文件人工回款状态无效")
+				}
+			}
 			if o.CardType != "" && o.CardType != "ejh" && o.CardType != "other" {
 				return errors.New("迁移订单银行卡类型无效")
 			}
@@ -563,6 +575,15 @@ func (s *Store) ImportProAccount(entry ProTransferAccount, exportedAt time.Time,
 		}
 		if released && o.Order.Status == "success" {
 			if _, err = tx.Exec(`INSERT OR IGNORE INTO pro_card_order_releases VALUES(?,?)`, o.Order.ID, formatTime(now)); err != nil {
+				return result, err
+			}
+		}
+		if v := o.CaseStateOverride; v != nil {
+			if _, err = tx.Exec(`INSERT INTO ejh_case_states(order_id,state,reason,updated_at,revision) VALUES(?,?,?,?,?)
+ ON CONFLICT(order_id) DO UPDATE SET state=excluded.state,reason=excluded.reason,updated_at=excluded.updated_at,revision=ejh_case_states.revision+1`, o.Order.ID, v.State, v.Reason, formatTime(v.UpdatedAt), v.Revision); err != nil {
+				return result, err
+			}
+			if err = s.ejhPutTx(tx, "match_audit", EJHID("audit", "import-case-state:"+o.Order.ID+now.String()), map[string]any{"action": "import_case_state", "order_id": o.Order.ID, "email": p.Email, "after": v, "at": now}); err != nil {
 				return result, err
 			}
 		}

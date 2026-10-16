@@ -17,7 +17,9 @@ func (s *Store) initializeProRestock() error {
  CREATE TABLE IF NOT EXISTS pro_restock_replacements(source TEXT PRIMARY KEY,task_id TEXT NOT NULL UNIQUE);
  CREATE TABLE IF NOT EXISTS pro_restock_decisions(id TEXT PRIMARY KEY,created_at TEXT NOT NULL,payload TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS pro_restock_snapshot(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS pro_restock_clock(id INTEGER PRIMARY KEY CHECK(id=1),last_batch TEXT,reset_at TEXT);`)
+ CREATE TABLE IF NOT EXISTS pro_restock_clock(id INTEGER PRIMARY KEY CHECK(id=1),last_batch TEXT,reset_at TEXT);
+ CREATE TABLE IF NOT EXISTS pro_fallback_config(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL,target_id TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS pro_fallback_bindings(target_id TEXT NOT NULL,account_id INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(target_id,account_id));`)
 	return err
 }
 func (s *Store) ProRestockConfig() (restock.Config, error) {
