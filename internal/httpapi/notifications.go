@@ -66,7 +66,7 @@ func (s *Server) deliverNotification(ctx context.Context, event notificationEven
 		return
 	}
 	for _, bot := range settings.Bots {
-		if !bot.Enabled {
+		if !settings.AcceptsBot(bot, event.Kind) {
 			continue
 		}
 		if ctx.Err() != nil {
@@ -85,6 +85,25 @@ func (s *Server) deliverNotification(ctx context.Context, event notificationEven
 			slog.Error("save notification result failed")
 		}
 	}
+}
+
+func (s *Server) notifyProAutomation(p model.MailAccountProfile, stage, status string) {
+	text := "账号：" + p.Email + "\n套餐：" + p.ProAuto.PlanCode
+	if stage == "push" && status == "completed" {
+		s.queueNotification("pro_pushed", "Pro 全自动推送完成", text+"\n已开通并完成推送，可在 Pro 管理查看")
+		return
+	}
+	label := map[string]string{"login": "登录", "recharge": "开通", "oauth": "获取 RT/AT", "push": "推送"}[stage]
+	text += "\n失败位置：" + label
+	title := "Pro 全自动失败"
+	if stage == "recharge" && p.ProAuto.OrderID != "" {
+		if order, _, err := s.store.GPTPayOrder(p.ProAuto.OrderID); err == nil && order.Status != "failed" && order.Status != "success" {
+			title = "Pro 开通结果待确认"
+			text += "\n原订单已保留，请先核实付款结果"
+		}
+	}
+	// Error details can contain session credentials or upstream responses.
+	s.queueNotification("pro_failed", title, text+"\n请在 Pro 管理查看失败详情和重试状态")
 }
 func (s *Server) getNotifications(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.store.NotificationSettings()
