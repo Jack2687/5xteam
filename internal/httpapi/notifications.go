@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"chatgpt-space-merge/internal/ejh"
 	"chatgpt-space-merge/internal/model"
 	"chatgpt-space-merge/internal/notify"
 	"chatgpt-space-merge/internal/store"
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -164,6 +166,52 @@ func (s *Server) testNotification(w http.ResponseWriter, r *http.Request) {
 
 type mergeNoticeKey struct{}
 type mergeNoticeState struct{ failed, removed bool }
+
+func (s *Server) notifyMergeStarted(p model.MailAccountProfile) {
+	standard, user := "未查询", "未查询"
+	settings, _, _, err := s.store.ProSettings()
+	if err == nil && proCostBindingMatches(p, settings) && p.CostCheckedAt != nil {
+		standard = notificationUSD(p.CostDownstreamSnapshot)
+		if p.UserCostDownstreamIdentity == p.CostDownstreamIdentity {
+			user = notificationUSD(p.UserCostDownstreamSnapshot)
+		}
+	}
+	text := "账号：" + p.Email + "\n消耗额度（标准）：" + standard + "\n用户费用（已用）：" + user + "\n已进入合并流程，按配置并发执行"
+	s.queueNotification("merge_start", "Pro 触发合并", text)
+}
+
+func notificationUSD(value float64) string {
+	if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return "未查询"
+	}
+	return fmt.Sprintf("$%.4f", value)
+}
+
+func (s *Server) notifyEJHOpened(op ejh.Operation) {
+	if op.Method != "open" {
+		return
+	}
+	source := "手动开卡"
+	if op.Automatic {
+		source = "自动开卡"
+	}
+	title, result := "EJH 开卡待核实", "响应未确认，请在 EJH 操作记录核实，勿重复开卡"
+	switch op.Status {
+	case "completed":
+		title, result = "EJH 开卡成功", "卡片已加入卡片管理"
+	case "failed":
+		title, result = "EJH 开卡失败", "请在 EJH 操作记录查看失败详情"
+	case "import_pending":
+		title, result = "EJH 开卡待导入", "卡台已返回卡片，本地导入未完成；请核实原操作，勿重复开卡"
+	}
+	text := fmt.Sprintf("来源：%s\n开卡金额：%s %s\n操作编号：%s", source, op.Amount, op.Currency, op.ID)
+	if op.CardID != "" {
+		if card, _, err := s.store.GPTPayCard(op.CardID); err == nil && len(card.Last4) == 4 {
+			text += "\n卡片尾号：" + card.Last4
+		}
+	}
+	s.queueNotification("ejh_open", title, text+"\n"+result)
+}
 
 func (s *Server) notifyMergeFailure(ctx context.Context, p model.MailAccountProfile, stage string, retrying, uncertain bool) {
 	if state, ok := ctx.Value(mergeNoticeKey{}).(*mergeNoticeState); ok {

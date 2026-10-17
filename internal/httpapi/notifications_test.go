@@ -74,6 +74,7 @@ func TestNotificationDeliveryRoutesToSelectedBots(t *testing.T) {
 		{ID: "stock", Events: []string{"restock"}},
 		{ID: "pro", Events: []string{"pro_start", "pro_pushed", "pro_failed"}},
 		{ID: "merge", Events: []string{"merge_start", "merge_result"}},
+		{ID: "card", Events: []string{"ejh_open"}},
 		{ID: "empty", Events: []string{}},
 		{ID: "disabled", Events: []string{"pro_start"}},
 	}}
@@ -90,14 +91,14 @@ func TestNotificationDeliveryRoutesToSelectedBots(t *testing.T) {
 		recipients = append(recipients, r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:])
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"code":0}`)), Header: make(http.Header)}, nil
 	})}}}
-	for _, kind := range []string{"restock", "pro_start", "pro_pushed", "pro_failed", "merge_start", "merge_result", "unknown"} {
+	for _, kind := range []string{"restock", "pro_start", "pro_pushed", "pro_failed", "merge_start", "merge_result", "ejh_open", "unknown"} {
 		s.deliverNotification(context.Background(), notificationEvent{Kind: kind, At: time.Now()})
 	}
-	if strings.Join(recipients, ",") != "stock,pro,pro,pro,merge,merge" {
+	if strings.Join(recipients, ",") != "stock,pro,pro,pro,merge,merge,card" {
 		t.Fatal("notifications sent to wrong robots", recipients)
 	}
 	logs, err := st.NotificationLogs()
-	if err != nil || len(logs) != 6 {
+	if err != nil || len(logs) != 7 {
 		t.Fatal("delivery log must only contain selected recipients", logs, err)
 	}
 }
