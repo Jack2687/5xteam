@@ -322,6 +322,19 @@ func (s *Server) nexovccBalanceLocked(ctx context.Context) error {
 	return s.store.NexovccCache("balance", v)
 }
 func (s *Server) syncNexovccLocked(ctx context.Context) error {
+	// Reconcile completed deletions before unrelated supplier queries. A
+	// temporary balance/product/ledger outage must not hide proof already saved.
+	priorOps, err := s.store.NexovccOperations()
+	if err != nil {
+		return err
+	}
+	for _, op := range priorOps {
+		if updated, confirmed := s.confirmCachedNexovccCloseLocked(op); confirmed {
+			if err = s.store.SaveNexovccOperation(updated); err != nil {
+				return err
+			}
+		}
+	}
 	c, _, e := s.nexovccClientLocked()
 	if e != nil {
 		return e
@@ -596,6 +609,9 @@ func (s *Server) openNexovccLocked(ctx context.Context, id, templateID string, a
 	return op, nil
 }
 func (s *Server) verifyNexovccOperationLocked(ctx context.Context, op nexovcc.Operation) nexovcc.Operation {
+	if updated, confirmed := s.confirmCachedNexovccCloseLocked(op); confirmed {
+		return updated
+	}
 	if op.Action == "freeze" && op.Status == "processing" {
 		op.Status, op.Error, op.Evidence, op.StepAt = "succeeded", "", "卡台已确认冻结成功", op.UpdatedAt
 		return op
@@ -665,6 +681,9 @@ func (s *Server) resolveNexovccLocked(ctx context.Context, in nexovccInput) (nex
 		return op, nil
 	}
 	if in.Outcome == "query" {
+		if updated, confirmed := s.confirmCachedNexovccCloseLocked(op); confirmed {
+			return updated, s.store.SaveNexovccOperation(updated)
+		}
 		if op.Action == "withdraw" || op.Action == "withdraw_all" || op.Action == "deposit" || nexovccClosing(op.Action) {
 			if e = s.syncNexovccFinanceLocked(ctx); e != nil {
 				return op, e

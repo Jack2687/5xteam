@@ -76,6 +76,15 @@ func (s *Server) nexovccTransferConfirmedLocked(ctx context.Context, op *nexovcc
 			return false
 		}
 	}
+	if !s.nexovccTransferEvidenceLocked(op, kind, expected, f) {
+		return false
+	}
+	_ = s.nexovccBalanceLocked(ctx)
+	return true
+}
+
+// Match persisted ledger evidence without requiring another network request.
+func (s *Server) nexovccTransferEvidenceLocked(op *nexovcc.Operation, kind int, expected int64, f nexovcc.Finance) bool {
 	candidates := []nexovcc.Fund{}
 	ops, err := s.store.NexovccOperations()
 	if err != nil {
@@ -107,8 +116,31 @@ func (s *Server) nexovccTransferConfirmedLocked(ctx context.Context, op *nexovcc
 		return false
 	}
 	op.Evidence = "fund:" + candidates[0].ID
-	_ = s.nexovccBalanceLocked(ctx)
 	return true
+}
+
+func (s *Server) confirmCachedNexovccCloseLocked(op nexovcc.Operation) (nexovcc.Operation, bool) {
+	if op.Terminal() || !nexovccClosing(op.Action) || (op.Step != "" && op.Step != "cancel_waiting" && op.Step != "cancel_submitting") {
+		return op, false
+	}
+	card, err := s.store.NexovccCard(op.CardID)
+	if err != nil || card.Status != "4" || card.Serial != op.Serial {
+		return op, false
+	}
+	expected, err := nexovcc.Cents(op.BeforeBalance)
+	if err != nil {
+		return op, false
+	}
+	if expected == 0 {
+		op.Evidence = "卡台已销卡，销卡前余额为 0"
+	} else {
+		var f nexovcc.Finance
+		if s.store.NexovccCached("finance", &f) != nil || f.At.Before(op.CreatedAt) || f.At.Before(op.StepAt) || !s.nexovccTransferEvidenceLocked(&op, 3002, expected, f) {
+			return op, false
+		}
+	}
+	op.Status, op.Error = "succeeded", ""
+	return op, true
 }
 
 // Refresh pending returns even while the page is closed. It shares the

@@ -116,3 +116,48 @@ func TestNexovccNullDetailAloneNeverProvesDeletion(t *testing.T) {
 		})
 	}
 }
+
+func TestNexovccClosedReceiptRecoversDuringSupplierOutage(t *testing.T) {
+	for _, mode := range []string{"monitor", "query"} {
+		t.Run(mode, func(t *testing.T) {
+			s, _ := nexFixtureServer(t)
+			ctx := context.Background()
+			opened, err := s.openNexovccLocked(ctx, "nex-outage-open1", "template", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			op := nexovcc.Operation{ID: "nex-outage-close1", Action: "withdraw_cancel", CardID: opened.CardID, Serial: opened.Serial, Status: "processing", Step: "cancel_waiting", BeforeBalance: "1.00", CreatedAt: time.Now().Add(-time.Minute), StepAt: time.Now().Add(-30 * time.Second)}
+			if err = s.store.BeginNexovccOperation(op); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.store.SaveNexovccCard(nexovcc.Card{Serial: op.Serial, Status: "4"}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err = s.store.SaveNexovccFinance(nexovcc.Finance{At: time.Now(), Funds: []nexovcc.Fund{{ID: "offline-close-credit", Serial: op.Serial, Currency: "USD", Kind: 3002, Amount: "1.00", At: op.StepAt}}}); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			s.nexovcc.transport = func(ctx context.Context, r nexovcc.Request) (nexovcc.Response, error) {
+				calls++
+				if r.Path != "/api/login" && r.Path != "/api/getBalanceInfo" {
+					t.Fatalf("unexpected request during outage: %s", r.Path)
+				}
+				return nexovcc.Response{Status: 522}, nil
+			}
+			s.nexovcc.client = nil
+			if mode == "monitor" {
+				if err = s.syncNexovccLocked(ctx); err == nil {
+					t.Fatal("other queries should report the outage")
+				}
+			} else {
+				if _, err = s.resolveNexovccLocked(ctx, nexovccInput{RequestID: op.ID, Outcome: "query"}); err != nil || calls != 0 {
+					t.Fatal("existing proof should not need another API call", err, calls)
+				}
+			}
+			op, err = s.store.NexovccOperation(op.ID)
+			if err != nil || op.Status != "succeeded" || op.Error != "" || op.Evidence != "fund:offline-close-credit" {
+				t.Fatal("outage blocked automatic recovery", op, err)
+			}
+		})
+	}
+}
