@@ -82,6 +82,12 @@ func nexFixtureServer(t *testing.T) (*Server, *nexFixture) {
 			f.cancelCalls++
 			f.status = "4"
 			return nexReply(nil), nil
+		case "/api/card/lockUserCard":
+			f.status = "2"
+			return nexReply(nil), nil
+		case "/api/card/unLockUserCard":
+			f.status = "1"
+			return nexReply(nil), nil
 		default:
 			t.Errorf("unexpected endpoint %s", r.Path)
 			return nexovcc.Response{Status: 500}, nil

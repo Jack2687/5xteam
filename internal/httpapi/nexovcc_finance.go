@@ -64,7 +64,11 @@ func (s *Server) nexovccTransferConfirmedLocked(ctx context.Context, op *nexovcc
 	if s.store.NexovccCached("finance", &f) != nil {
 		return false
 	}
-	if f.At.Before(op.CreatedAt) {
+	freshAfter := op.CreatedAt
+	if op.StepAt.After(freshAfter) {
+		freshAfter = op.StepAt
+	}
+	if f.At.Before(freshAfter) {
 		if s.syncNexovccFinanceLocked(ctx) != nil {
 			return false
 		}
@@ -90,7 +94,7 @@ func (s *Server) nexovccTransferConfirmedLocked(ctx context.Context, op *nexovcc
 		}
 		used := false
 		for _, prior := range ops {
-			if prior.ID != op.ID && prior.Evidence == "fund:"+r.ID {
+			if prior.ID != op.ID && (prior.Evidence == "fund:"+r.ID || prior.WithdrawEvidence == "fund:"+r.ID) {
 				used = true
 				break
 			}
@@ -107,8 +111,9 @@ func (s *Server) nexovccTransferConfirmedLocked(ctx context.Context, op *nexovcc
 	return true
 }
 
-// Refresh pending returns even while the page is closed. This worker only
-// reads upstream data, shares the operation mutex, and never submits payments.
+// Refresh pending returns even while the page is closed. It shares the
+// operation mutex and can finish previously requested close pipelines after
+// their withdrawal is confirmed. It never replays an uncertain submitted step.
 func (s *Server) startNexovccMonitor() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.nexovcc.jobMu.Lock()

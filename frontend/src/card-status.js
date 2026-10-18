@@ -27,6 +27,7 @@ export function cardUsage(card, now = new Date()) {
   if (local.source==='nexovcc') {
     if (status==='4') return blocked('已销卡')
     if (local.issuer_cancel_status) return blocked('销卡处理中','等待卡片状态及余额回款核实','pending')
+    if (local.issuer_frozen) return blocked('已冻结','可解冻或执行销卡','pending')
     if (locked) return blocked('操作待核实','请到环球卡台查询原操作','pending')
     if (status!=='1') return blocked('卡台状态不可用',`环球状态 ${status||'未知'}`)
   } else if (linked) {

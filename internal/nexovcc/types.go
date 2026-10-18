@@ -62,6 +62,8 @@ type Card struct {
 	SyncedAt  time.Time `json:"synced_at"`
 	Imported  bool      `json:"imported"`
 	Error     string    `json:"error"`
+	Control   string    `json:"control,omitempty"`
+	ControlAt time.Time `json:"control_at,omitempty"`
 }
 type PrivateCard struct {
 	Number      string
@@ -85,6 +87,11 @@ type Operation struct {
 	BeforeAccountBalance string    `json:"before_account_balance"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
+	Step                 string    `json:"step,omitempty"`
+	StepAt               time.Time `json:"step_at,omitempty"`
+	WithdrawAmount       string    `json:"withdraw_amount,omitempty"`
+	WithdrawEvidence     string    `json:"withdraw_evidence,omitempty"`
+	FrozenAt             time.Time `json:"frozen_at,omitempty"`
 }
 
 func (o Operation) Terminal() bool { return o.Status == "succeeded" || o.Status == "failed" }

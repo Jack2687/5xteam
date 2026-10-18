@@ -1,5 +1,5 @@
 export const providerName = value => value === 'nexovcc' ? '环球' : value === 'ejh' ? 'EJH' : '其他'
-export const operationNames = {open:'开卡',deposit:'充值',withdraw:'提现',freeze:'冻结',unfreeze:'解冻',cancel:'销卡',remark:'修改备注'}
+export const operationNames = {open:'开卡',deposit:'充值',withdraw:'自定义提现',withdraw_all:'提现留 1U',withdraw_cancel:'提现留 1U 并销卡',freeze:'冻结',unfreeze:'解冻',cancel:'一键销卡',remark:'修改备注'}
 export const operationStates = {submitted:'已提交',processing:'处理中',import_pending:'待同步入库',unknown:'结果待核实',succeeded:'成功',failed:'失败'}
 export const returnStates = {unopened:'未开通',opened:'已开通',waiting:'已申请待回款',returned:'已回款'}
 export const terminal = op => ['succeeded','failed'].includes(op.status)
@@ -17,6 +17,7 @@ export function nexovccOperationPayload(input) {
 export function cardState(row) {
  if (row.card.status === '4') return '已销卡'
  if (row.local?.issuer_cancel_status) return '销卡处理中'
+ if (row.card.control === 'frozen' || row.local?.issuer_frozen) return '已冻结'
  if (row.card.error || !row.card.imported) return '资料待同步'
  if (row.local?.issuer_locked) return '操作待核实'
  return row.card.status === '1' ? '正常' : `不可用（${row.card.status || '未知'}）`

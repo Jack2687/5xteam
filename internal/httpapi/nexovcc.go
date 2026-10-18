@@ -67,6 +67,9 @@ type nexovccJob struct {
 	Done      int                `json:"done"`
 	Total     int                `json:"total"`
 	Operation *nexovcc.Operation `json:"operation,omitempty"`
+	CardDone  int                `json:"card_done,omitempty"`
+	CardTotal int                `json:"card_total,omitempty"`
+	CardLabel string             `json:"card_label,omitempty"`
 }
 type nexovccRuntime struct {
 	mu            sync.Mutex
@@ -81,16 +84,17 @@ type nexovccRuntime struct {
 	monitorCancel context.CancelFunc
 }
 type nexovccInput struct {
-	Action     string `json:"action"`
-	RequestID  string `json:"request_id"`
-	CardID     string `json:"card_id"`
-	TemplateID string `json:"template_id"`
-	Amount     string `json:"amount"`
-	Remark     string `json:"remark"`
-	Confirm    bool   `json:"confirm"`
-	Serial     string `json:"serial_no"`
-	Outcome    string `json:"outcome"`
-	Evidence   string `json:"evidence"`
+	Action     string   `json:"action"`
+	RequestID  string   `json:"request_id"`
+	CardID     string   `json:"card_id"`
+	CardIDs    []string `json:"card_ids,omitempty"`
+	TemplateID string   `json:"template_id"`
+	Amount     string   `json:"amount"`
+	Remark     string   `json:"remark"`
+	Confirm    bool     `json:"confirm"`
+	Serial     string   `json:"serial_no"`
+	Outcome    string   `json:"outcome"`
+	Evidence   string   `json:"evidence"`
 }
 
 func (s *Server) nexovccRoutes(m *http.ServeMux) {
@@ -221,9 +225,13 @@ func (s *Server) runNexovcc(w http.ResponseWriter, r *http.Request) {
 	if decodeJSON(w, r, &in, 16<<10) != nil {
 		return
 	}
-	allowed := map[string]bool{"sync": true, "finance": true, "balance": true, "open": true, "refresh": true, "deposit": true, "withdraw": true, "freeze": true, "unfreeze": true, "cancel": true, "remark": true, "resolve": true}
+	allowed := map[string]bool{"sync": true, "finance": true, "balance": true, "open": true, "refresh": true, "deposit": true, "withdraw": true, "withdraw_all": true, "withdraw_cancel": true, "freeze": true, "unfreeze": true, "cancel": true, "remark": true, "resolve": true}
 	if !allowed[in.Action] {
 		writeAPI(w, 400, nil, "环球操作无效")
+		return
+	}
+	if len(in.CardIDs) > 0 && (len(in.CardIDs) > 100 || !nexovcc.ValidRequestID(in.RequestID) || (in.Action != "withdraw_all" && !nexovccClosing(in.Action))) {
+		writeAPI(w, 400, nil, "批量操作须选择 1～100 张卡，并提供有效请求编号")
 		return
 	}
 	if in.Action != "sync" && in.Action != "finance" && in.Action != "balance" && in.Action != "refresh" && !in.Confirm {
@@ -246,7 +254,7 @@ func (s *Server) runNexovcc(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, 503, nil, "服务正在关闭")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), max(15*time.Minute, time.Duration(len(in.CardIDs))*2*time.Minute))
 	s.nexovcc.cancel = cancel
 	s.nexovcc.job = nexovccJob{ID: randomRegistrationID(), Status: "running", Message: "正在处理…", Total: 1}
 	job := s.nexovcc.job
@@ -256,6 +264,10 @@ func (s *Server) runNexovcc(w http.ResponseWriter, r *http.Request) {
 		defer s.nexovcc.wg.Done()
 		defer cancel()
 		defer s.nexovcc.mu.Unlock()
+		if len(in.CardIDs) > 0 {
+			s.batchNexovccLocked(ctx, in)
+			return
+		}
 		var op nexovcc.Operation
 		var e error
 		switch in.Action {
@@ -368,7 +380,8 @@ func (s *Server) syncNexovccLocked(ctx context.Context) error {
 	if e = s.syncNexovccFinanceLocked(ctx); e != nil {
 		return fmt.Errorf("卡片已同步，财务同步未完成：%w", e)
 	}
-	// Query only. Never replay mutations when reconciling pending operations.
+	// Reconcile submitted steps without replaying them. Explicitly requested
+	// close pipelines may advance to their next unsent step after confirmation.
 	ops, e := s.store.NexovccOperations()
 	if e != nil {
 		return e
@@ -551,97 +564,22 @@ func (s *Server) openNexovccLocked(ctx context.Context, id, templateID string, a
 	s.notifyNexovccOpened(op)
 	return op, nil
 }
-func (s *Server) actionNexovccLocked(ctx context.Context, in nexovccInput) (nexovcc.Operation, error) {
-	var op nexovcc.Operation
-	if !nexovcc.ValidRequestID(in.RequestID) {
-		return op, fmt.Errorf("操作请求编号无效")
-	}
-	if prior, e := s.store.NexovccOperation(in.RequestID); e == nil {
-		if prior.Action != in.Action || prior.CardID != in.CardID || prior.Amount != in.Amount || prior.Remark != in.Remark {
-			return prior, fmt.Errorf("请求编号已用于其他参数")
-		}
-		return prior, nil
-	} else if !errors.Is(e, sql.ErrNoRows) {
-		return op, e
-	}
-	client, _, e := s.nexovccClientLocked()
-	if e != nil {
-		return op, e
-	}
-	card, e := s.refreshNexovccLocked(ctx, in.CardID, "")
-	if e != nil {
-		return op, e
-	}
-	if card.Status == "4" {
-		return op, fmt.Errorf("该卡已销卡")
-	}
-	paths := map[string]string{"deposit": "userCardDeposit", "withdraw": "userCardWithdraw", "freeze": "lockUserCard", "unfreeze": "unLockUserCard", "cancel": "deleteUserCard", "remark": "updateCardRemark"}
-	path := paths[in.Action]
-	if path == "" {
-		return op, fmt.Errorf("操作类型无效")
-	}
-	body := map[string]any{"serial_no": card.Serial}
-	if in.Action == "deposit" || in.Action == "withdraw" {
-		amount, e := nexovcc.Cents(in.Amount)
-		if e != nil || amount <= 0 {
-			return op, fmt.Errorf("请输入有效金额")
-		}
-		balance, e := nexovcc.Cents(card.Balance)
-		if e != nil {
-			return op, e
-		}
-		if in.Action == "withdraw" && amount > balance-100 {
-			return op, fmt.Errorf("提现后须至少保留 1 USD")
-		}
-		body["amount"] = in.Amount
-		body["money_id"] = 3
-	}
-	if in.Action == "cancel" {
-		balance, e := nexovcc.Cents(card.Balance)
-		if e != nil || balance > 100 {
-			return op, fmt.Errorf("请先提现并核实到账，卡内保留不超过 1 USD 后再销卡")
-		}
-	}
-	if in.Action == "remark" {
-		if len([]rune(in.Remark)) > 40 {
-			return op, fmt.Errorf("备注不能超过 40 字符")
-		}
-		body["remark"] = in.Remark
-	}
-	balance, e := client.Balance(ctx)
-	if e != nil {
-		return op, e
-	}
-	if e = s.store.NexovccCache("balance", balance); e != nil {
-		return op, e
-	}
-	op = nexovcc.Operation{ID: in.RequestID, Action: in.Action, CardID: card.ID, Serial: card.Serial, Amount: in.Amount, Remark: in.Remark, Status: "submitted", BeforeBalance: card.Balance, BeforeAccountBalance: balance.Amount, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	if e = s.store.BeginNexovccOperation(op); e != nil {
-		return op, e
-	}
-	_, e = client.Do(ctx, "/api/card/"+path, body)
-	if e != nil {
-		op.Status = "unknown"
-		if !nexovcc.IsUnknown(e) {
-			op.Status = "failed"
-		}
-		op.Error = e.Error()
-	} else {
-		op.Status = "processing"
-		op.Error = "卡台已受理，请查询并核实结果"
-	}
-	if e = s.store.SaveNexovccOperation(op); e != nil {
-		return op, e
-	}
-	if op.Status == "processing" {
-		op = s.verifyNexovccOperationLocked(ctx, op)
-		if e = s.store.SaveNexovccOperation(op); e != nil {
-			return op, e
-		}
-	}
-	return op, nil
-}
 func (s *Server) verifyNexovccOperationLocked(ctx context.Context, op nexovcc.Operation) nexovcc.Operation {
+	if op.Action == "freeze" && op.Status == "processing" {
+		op.Status, op.Error, op.Evidence, op.StepAt = "succeeded", "", "卡台已确认冻结成功", op.UpdatedAt
+		return op
+	}
+	if nexovccClosing(op.Action) && op.Step != "" && !strings.HasPrefix(op.Step, "cancel_") {
+		if op.Step == "freeze_submitting" {
+			op.Error = "冻结结果尚未确认，请查询原操作；尚未提交销卡"
+			return op
+		}
+		updated, err := s.advanceNexovccCloseLocked(ctx, op)
+		if err != nil {
+			updated.Error = "操作已保留，稍后继续：" + err.Error()
+		}
+		return updated
+	}
 	card, e := s.refreshNexovccLocked(ctx, op.CardID, op.Serial)
 	if e != nil {
 		op.Error = "结果同步失败，请稍后核实：" + e.Error()
@@ -653,20 +591,23 @@ func (s *Server) verifyNexovccOperationLocked(ctx context.Context, op nexovcc.Op
 		confirmed = card.Imported
 	case "remark":
 		confirmed = card.Remark == op.Remark
-	case "cancel":
+	case "cancel", "withdraw_cancel":
 		if card.Status == "4" {
 			confirmed = s.nexovccTransferConfirmedLocked(ctx, &op, 3002, op.BeforeBalance)
 			if !confirmed {
 				op.Error = "卡台已销卡，剩余余额回到账户仍待核实"
 			}
 		}
-	case "freeze", "unfreeze": // Only ACTIVE=1 and DELETED=4 are established; never invent frozen codes.
+	case "freeze", "unfreeze":
 		if op.Action == "unfreeze" {
 			confirmed = card.Status == "1"
 		} else {
-			op.Error = "冻结请求已受理，请在环球后台核实冻结状态后确认"
+			confirmed = card.Control == "frozen"
+			if !confirmed {
+				op.Error = "冻结结果尚未确认，请查询原操作"
+			}
 		}
-	case "deposit", "withdraw":
+	case "deposit", "withdraw", "withdraw_all":
 		kind := 4002
 		if op.Action == "deposit" {
 			kind = 4001
@@ -691,7 +632,7 @@ func (s *Server) resolveNexovccLocked(ctx context.Context, in nexovccInput) (nex
 		return op, nil
 	}
 	if in.Outcome == "query" {
-		if op.Action == "withdraw" || op.Action == "deposit" || op.Action == "cancel" {
+		if op.Action == "withdraw" || op.Action == "withdraw_all" || op.Action == "deposit" || nexovccClosing(op.Action) {
 			if e = s.syncNexovccFinanceLocked(ctx); e != nil {
 				return op, e
 			}
@@ -729,7 +670,7 @@ func (s *Server) resolveNexovccLocked(ctx context.Context, in nexovccInput) (nex
 			if e != nil {
 				return op, e
 			}
-			if op.Action == "cancel" && card.Status != "4" {
+			if nexovccClosing(op.Action) && card.Status != "4" {
 				return op, fmt.Errorf("卡台尚未返回已销卡状态")
 			}
 			if op.Action == "freeze" && card.Status == "1" {

@@ -191,6 +191,12 @@ func (s *Store) SaveNexovccCard(c nexovcc.Card, private *nexovcc.PrivateCard) (n
 			return c, e
 		}
 		c.Imported = old.Imported
+		c.Control, c.ControlAt = old.Control, old.ControlAt
+		// A transition back to ACTIVE after observing a non-active snapshot
+		// also recognizes an unfreeze performed on the supplier's website.
+		if c.Status == "4" || (c.Status == "1" && old.Status != "1") {
+			c.Control = ""
+		}
 		if c.Last4 == "" {
 			c.Last4 = old.Last4
 		}
@@ -285,7 +291,7 @@ func (s *Store) nexovccIssuer(q proCapacityQuery, key string) (*gptpay.Card, err
 	if e = json.Unmarshal([]byte(raw), &c); e != nil {
 		return nil, e
 	}
-	out := &gptpay.Card{Source: "nexovcc", IssuerOrderNo: c.Serial, IssuerStatus: c.Status, IssuerLocked: pending || c.Error != "" || !c.Imported}
+	out := &gptpay.Card{Source: "nexovcc", IssuerOrderNo: c.Serial, IssuerStatus: c.Status, IssuerFrozen: c.Control == "frozen", IssuerLocked: pending || c.Control == "frozen" || c.Error != "" || !c.Imported}
 	var uncertain bool
 	if e = q.QueryRow(`SELECT EXISTS(SELECT 1 FROM pro_card_usage WHERE card_key=? AND status IN ('submission_unknown','manual_review'))`, key).Scan(&uncertain); e != nil {
 		return nil, e
@@ -297,7 +303,7 @@ func (s *Store) nexovccIssuer(q proCapacityQuery, key string) (*gptpay.Card, err
 		if e != nil {
 			return nil, e
 		}
-		if action == "cancel" {
+		if action == "cancel" || action == "withdraw_cancel" {
 			out.IssuerCancelStatus = status
 		}
 	}
@@ -423,7 +429,7 @@ func (s *Store) BeginNexovccOperation(op nexovcc.Operation, restockIDs ...string
 		if pending > 0 {
 			return fmt.Errorf("卡片仍有开通预留或未决付款，请先核实")
 		}
-		if (op.Action == "withdraw" || op.Action == "cancel") && n > 0 {
+		if (op.Action == "withdraw" || op.Action == "withdraw_all" || op.Action == "cancel" || op.Action == "withdraw_cancel") && n > 0 {
 			return fmt.Errorf("仍有未确认回款的账号，暂不能提现或销卡")
 		}
 	}
@@ -480,6 +486,27 @@ func (s *Store) SaveNexovccOperation(op nexovcc.Operation) error {
 	}
 	if n, e := result.RowsAffected(); e != nil || n != 1 {
 		return fmt.Errorf("环球操作记录不存在，更新未保存")
+	}
+	// The supplier's explicit success acknowledgement confirms freeze/unfreeze.
+	// Persist it with the operation so a later card refresh cannot lose it.
+	control, at := "", op.FrozenAt
+	if !at.IsZero() {
+		control = "frozen"
+	}
+	if op.Status == "succeeded" && (op.Action == "freeze" || op.Action == "unfreeze") {
+		control, at = "frozen", op.StepAt
+		if at.IsZero() {
+			at = op.UpdatedAt
+		}
+		if op.Action == "unfreeze" {
+			control = "active"
+		}
+	}
+	if control != "" {
+		_, e = tx.Exec(`UPDATE nexovcc_cards SET profile=json_set(profile,'$.control',?,'$.control_at',?) WHERE id=? AND coalesce(json_extract(profile,'$.control_at'),'')<?`, control, formatTime(at), op.CardID, formatTime(at))
+		if e != nil {
+			return e
+		}
 	}
 	if _, e = tx.Exec(`INSERT INTO nexovcc_audit(profile) VALUES(?)`, mustJSON(op)); e != nil {
 		return e
