@@ -90,7 +90,27 @@ func (s *Server) getGPTPayCatalog(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) listGPTPayCards(w http.ResponseWriter, r *http.Request) {
 	p := s.parsePagination(r)
-	items, total, err := s.store.GPTPayCards(p.Limit, p.Offset, r.URL.Query().Get("enabled") == "true")
+	var items []gptpay.Card
+	var total int
+	var err error
+	if provider := r.URL.Query().Get("card_provider"); provider != "" {
+		if provider != "configured" || r.URL.Query().Get("enabled") != "true" {
+			writeAPI(w, 400, nil, "开通选卡请使用当前配置的卡台和可用卡筛选")
+			return
+		}
+		var cfg model.ProSettings
+		cfg, _, _, err = s.store.ProSettings()
+		if err == nil {
+			// Filter before pagination so an earlier EJH/Other card cannot
+			// become the default when full automation is configured for Nexovcc.
+			items, err = s.automaticProCards(cfg)
+			total = len(items)
+			offset := min(p.Offset, total)
+			items = items[offset:min(total, offset+p.Limit)]
+		}
+	} else {
+		items, total, err = s.store.GPTPayCards(p.Limit, p.Offset, r.URL.Query().Get("enabled") == "true")
+	}
 	if err != nil {
 		writeAPI(w, 500, nil, "读取银行卡失败")
 		return
@@ -195,11 +215,12 @@ func (s *Server) listGPTPayCardCases(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, 500, nil, err.Error())
 		return
 	}
-	if err = s.applyNexovccCaseStates(cases); err != nil {
+	financialCases, err := s.proFinancialCases(cases)
+	if err != nil {
 		writeAPI(w, 500, nil, "读取环球关联账号失败")
 		return
 	}
-	writeAPI(w, 200, cases, "")
+	writeAPI(w, 200, financialCases, "")
 }
 func (s *Server) deleteGPTPayCard(w http.ResponseWriter, r *http.Request) {
 	unlock := s.lockFreeAccount("gptpay-card:" + r.PathValue("id"))

@@ -165,6 +165,7 @@ func New(dataStore *store.Store, jobs *workflow.Manager) (*Server, error) {
 	go server.auditWriter()
 	server.startProAutomationMonitor()
 	server.startProQualityMonitor()
+	server.startNexovccMonitor()
 	return server, nil
 }
 

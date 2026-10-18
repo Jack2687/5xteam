@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"chatgpt-space-merge/internal/ejh"
 	"chatgpt-space-merge/internal/model"
 	"chatgpt-space-merge/internal/store"
 	"chatgpt-space-merge/internal/sub2"
@@ -24,9 +23,9 @@ import (
 )
 
 type proAccountListItem struct {
-	FinancialCases     []ejh.Case `json:"financial_cases"`
-	PushElapsedMinutes int64      `json:"push_elapsed_minutes"`
-	ForceMergeDeadline *time.Time `json:"force_merge_deadline,omitempty"`
+	FinancialCases     []proFinancialCase `json:"financial_cases"`
+	PushElapsedMinutes int64              `json:"push_elapsed_minutes"`
+	ForceMergeDeadline *time.Time         `json:"force_merge_deadline,omitempty"`
 	model.MailAccountProfile
 	ActivationCard *store.ProActivationCard `json:"activation_card,omitempty"`
 	StageProgress  model.ProStageDisplay    `json:"pro_stage_progress"`
@@ -50,11 +49,12 @@ func (s *Server) proAccountListWithCards(items []model.MailAccountProfile) ([]pr
 	if err != nil {
 		return nil, err
 	}
-	if err = s.applyNexovccCaseStates(cases); err != nil {
+	financialCases, err := s.proFinancialCases(cases)
+	if err != nil {
 		return nil, err
 	}
-	byEmail := map[string][]ejh.Case{}
-	for _, c := range cases {
+	byEmail := map[string][]proFinancialCase{}
+	for _, c := range financialCases {
 		byEmail[strings.ToLower(c.Email)] = append(byEmail[strings.ToLower(c.Email)], c)
 	}
 	config, _, _, err := s.store.ProSettings()
@@ -73,7 +73,7 @@ func (s *Server) proAccountListWithCards(items []model.MailAccountProfile) ([]pr
 		row := proAccountListItem{MailAccountProfile: item, StageProgress: item.ProStages()}
 		row.FinancialCases = byEmail[strings.ToLower(item.Email)]
 		if row.FinancialCases == nil {
-			row.FinancialCases = []ejh.Case{}
+			row.FinancialCases = []proFinancialCase{}
 		}
 		if item.ProPushStartedAt != nil {
 			row.PushElapsedMinutes = max(0, int64(time.Since(*item.ProPushStartedAt)/time.Minute))

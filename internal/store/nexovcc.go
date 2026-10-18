@@ -20,7 +20,9 @@ func (s *Store) initializeNexovcc() error {
  CREATE TABLE IF NOT EXISTS nexovcc_operations(id TEXT PRIMARY KEY,scope TEXT NOT NULL,profile TEXT NOT NULL,status TEXT NOT NULL);
  CREATE UNIQUE INDEX IF NOT EXISTS nexovcc_active_scope ON nexovcc_operations(scope) WHERE status NOT IN ('succeeded','failed');
  CREATE TABLE IF NOT EXISTS nexovcc_case_states(order_id TEXT PRIMARY KEY,state TEXT NOT NULL,reason TEXT NOT NULL,updated_at TEXT NOT NULL,revision INTEGER NOT NULL);
- CREATE TABLE IF NOT EXISTS nexovcc_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,profile TEXT NOT NULL);`)
+ CREATE TABLE IF NOT EXISTS nexovcc_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,profile TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS nexovcc_case_matches(order_id TEXT PRIMARY KEY,group_id TEXT NOT NULL UNIQUE,returned INTEGER NOT NULL DEFAULT 0,profile TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS nexovcc_revenue(identity TEXT PRIMARY KEY,email TEXT NOT NULL,amount REAL NOT NULL,updated_at TEXT NOT NULL);`)
 	return e
 }
 func (s *Store) NexovccSettings() (nexovcc.Settings, nexovcc.Credentials, error) {
@@ -302,7 +304,12 @@ func (s *Store) nexovccIssuer(q proCapacityQuery, key string) (*gptpay.Card, err
 	return out, nil
 }
 
-const nexovccOccupiedSQL = `(u.status NOT IN ('success','failed') OR (u.status='success' AND NOT EXISTS(SELECT 1 FROM nexovcc_case_states s WHERE s.order_id=u.order_id AND s.state IN ('returned','unopened'))))`
+const nexovccOccupiedSQL = `(CASE
+ WHEN u.status NOT IN ('success','failed') THEN 1
+ WHEN EXISTS(SELECT 1 FROM nexovcc_case_states s WHERE s.order_id=u.order_id AND s.state IN ('opened','waiting')) THEN 1
+ WHEN EXISTS(SELECT 1 FROM nexovcc_case_states s WHERE s.order_id=u.order_id AND s.state IN ('returned','unopened')) THEN 0
+ ELSE u.status='success' AND NOT EXISTS(SELECT 1 FROM nexovcc_case_matches m WHERE m.order_id=u.order_id AND m.returned=1)
+ END)`
 
 func nexovccOccupancy(q proCapacityQuery, key, except string) (int, string, error) {
 	var n int
@@ -481,24 +488,32 @@ func (s *Store) SaveNexovccOperation(op nexovcc.Operation) error {
 }
 
 type NexovccCase struct {
-	ID            string    `json:"id"`
-	Email         string    `json:"email"`
-	CardID        string    `json:"card_id"`
-	Last4         string    `json:"last4"`
-	Plan          string    `json:"plan"`
-	PaymentStatus string    `json:"payment_status"`
-	State         string    `json:"state"`
-	Reason        string    `json:"reason"`
-	RequestedAt   string    `json:"requested_at"`
-	UpdatedAt     string    `json:"updated_at"`
-	Revision      int       `json:"revision"`
-	CreatedAt     time.Time `json:"created_at"`
+	CardName      string        `json:"card_name"`
+	Provider      string        `json:"provider"`
+	OpenedAt      *time.Time    `json:"opened_at,omitempty"`
+	Deleted       bool          `json:"deleted"`
+	ManualState   string        `json:"manual_state,omitempty"`
+	Match         *NexovccMatch `json:"match,omitempty"`
+	Revenue       *float64      `json:"revenue_r"`
+	RevenueNote   string        `json:"revenue_note,omitempty"`
+	ID            string        `json:"id"`
+	Email         string        `json:"email"`
+	CardID        string        `json:"card_id"`
+	Last4         string        `json:"last4"`
+	Plan          string        `json:"plan"`
+	PaymentStatus string        `json:"payment_status"`
+	State         string        `json:"state"`
+	Reason        string        `json:"reason"`
+	RequestedAt   string        `json:"requested_at"`
+	UpdatedAt     string        `json:"updated_at"`
+	Revision      int           `json:"revision"`
+	CreatedAt     time.Time     `json:"created_at"`
 }
 
 func (s *Store) NexovccCases() ([]NexovccCase, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, e := s.db.Query(`SELECT o.id,o.email,c.id,json_extract(o.profile,'$.card_last4'),json_extract(o.profile,'$.plan_code'),u.status,coalesce(nullif(st.state,'auto'),CASE WHEN u.status<>'success' THEN 'unopened' WHEN r.order_id IS NOT NULL THEN 'waiting' ELSE 'opened' END),coalesce(st.reason,''),CASE WHEN st.state='waiting' THEN st.updated_at ELSE coalesce(r.released_at,'') END,coalesce(st.updated_at,''),coalesce(st.revision,0),o.created_at FROM pro_card_usage u JOIN gptpay_orders o ON o.id=u.order_id JOIN nexovcc_cards c ON c.card_key=u.card_key LEFT JOIN nexovcc_case_states st ON st.order_id=o.id LEFT JOIN pro_card_order_releases r ON r.order_id=o.id ORDER BY o.created_at DESC,o.id DESC`)
+	rows, e := s.db.Query(`SELECT o.id,o.email,c.id,json_extract(o.profile,'$.card_last4'),json_extract(o.profile,'$.plan_code'),u.status,coalesce(nullif(st.state,'auto'),CASE WHEN u.status<>'success' THEN 'unopened' WHEN r.order_id IS NOT NULL THEN 'waiting' ELSE 'opened' END),coalesce(st.reason,''),CASE WHEN st.state='waiting' THEN st.updated_at ELSE coalesce(r.released_at,'') END,coalesce(st.updated_at,''),coalesce(st.revision,0),o.created_at,coalesce(json_extract(o.profile,'$.card_name'),''),coalesce(json_extract(o.profile,'$.provider'),''),coalesce(json_extract(o.profile,'$.succeeded_at'),''),NOT EXISTS(SELECT 1 FROM mail_accounts ma WHERE ma.email=o.email AND json_extract(ma.profile,'$.management_scope')='pro'),coalesce(nullif(st.state,'auto'),'') FROM pro_card_usage u JOIN gptpay_orders o ON o.id=u.order_id JOIN nexovcc_cards c ON c.card_key=u.card_key LEFT JOIN nexovcc_case_states st ON st.order_id=o.id LEFT JOIN pro_card_order_releases r ON r.order_id=o.id ORDER BY o.created_at DESC,o.id DESC`)
 	if e != nil {
 		return nil, e
 	}
@@ -506,14 +521,24 @@ func (s *Store) NexovccCases() ([]NexovccCase, error) {
 	out := []NexovccCase{}
 	for rows.Next() {
 		var v NexovccCase
-		var at string
-		if e = rows.Scan(&v.ID, &v.Email, &v.CardID, &v.Last4, &v.Plan, &v.PaymentStatus, &v.State, &v.Reason, &v.RequestedAt, &v.UpdatedAt, &v.Revision, &at); e != nil {
+		var at, openedAt string
+		if e = rows.Scan(&v.ID, &v.Email, &v.CardID, &v.Last4, &v.Plan, &v.PaymentStatus, &v.State, &v.Reason, &v.RequestedAt, &v.UpdatedAt, &v.Revision, &at, &v.CardName, &v.Provider, &openedAt, &v.Deleted, &v.ManualState); e != nil {
 			return nil, e
 		}
 		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, at)
+		if opened, err := time.Parse(time.RFC3339Nano, openedAt); err == nil && !opened.IsZero() {
+			v.OpenedAt = &opened
+		}
 		out = append(out, v)
 	}
-	return out, rows.Err()
+	if e = rows.Err(); e != nil {
+		return nil, e
+	}
+	rows.Close()
+	if e = s.enrichNexovccCasesLocked(out); e != nil {
+		return nil, e
+	}
+	return out, nil
 }
 func (s *Store) SetNexovccCase(id, state, reason string, revision int) error {
 	if state != "auto" && state != "unopened" && state != "opened" && state != "waiting" && state != "returned" {

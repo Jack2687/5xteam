@@ -152,6 +152,7 @@ type Account struct {
 	Leaving             bool          `json:"leaving"`
 	Money               *AccountMoney `json:"money,omitempty"`
 	PurchasePlan        string        `json:"purchase_plan,omitempty"`
+	CardProvider        string        `json:"card_provider,omitempty"`
 	EJH                 bool          `json:"ejh"`
 	ForceMergeKey       string        `json:"force_merge_key,omitempty"`
 	PushTimeoutEnabled  *bool         `json:"push_timeout_enabled,omitempty"`

@@ -245,6 +245,9 @@ func (s *Store) UpdateProAccount(email string, mutate func(*model.MailAccountPro
 	if err = s.recordEJHConsumptionTx(tx, p, p.UpdatedAt); err != nil {
 		return p, err
 	}
+	if err = s.recordNexovccRevenueTx(tx, p); err != nil {
+		return p, err
+	}
 	if !wasRemoved && (p.RemoveStatus == "completed" || p.RemoveStatus == "team_removed") {
 		if err = releaseProCardOrdersTx(tx, email, formatTime(p.UpdatedAt)); err != nil {
 			return p, err

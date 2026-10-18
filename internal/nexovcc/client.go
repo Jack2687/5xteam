@@ -186,7 +186,7 @@ var paths = map[string]bool{"/api/getBalanceInfo": true, "/api/product/findUserP
 func (c *Client) Do(ctx context.Context, path string, body map[string]any) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !paths[path] {
+	if !paths[path] && path != "/api/findLogRecharge" && path != "/api/findLogCardTrades" && path != "/api/findLogWebFunds" && path != "/api/findLogReportCardDay" {
 		return nil, &Error{Message: "环球接口路径无效"}
 	}
 	if !c.now().Before(c.until) {

@@ -177,7 +177,7 @@ func (s *Server) restockTasks(snap restock.Snapshot, p model.ProSettings, c rest
 		} else if t.Status != "reserved" {
 			t.Status = "attention"
 			t.ETA = nil
-			t.Message = "启动结果待核验，保留预留，避免重复发卡"
+			t.Message = firstNonEmpty(t.Message, "启动结果待核验，保留预留，避免重复发卡")
 		}
 		t.UpdatedAt = now
 		if err = s.store.SaveProRestockTask(*t); err != nil {

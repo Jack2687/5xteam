@@ -49,6 +49,8 @@ func nexFixtureServer(t *testing.T) (*Server, *nexFixture) {
 			return v, nil
 		case "/api/getBalanceInfo":
 			return nexReply([]any{map[string]any{"money_id": 3, "balance": "100.00", "freeze_balance": "0.00"}}), nil
+		case "/api/findLogRecharge", "/api/findLogCardTrades", "/api/findLogWebFunds", "/api/findLogReportCardDay":
+			return nexReply(map[string]any{"list": nil, "total": 0, "page": r.Body["page"], "pageSize": 100}), nil
 		case "/api/product/findUserProductList":
 			return nexReply(map[string]any{"list": []any{map[string]any{"ID": 267, "status": 1, "recharge_min": "1.00", "product_name": "fixture"}}}), nil
 		case "/api/card/createUserCard":
@@ -292,6 +294,15 @@ func TestNexovccProAutomationRetriesSameCardThenPushes(t *testing.T) {
 				t.Error("wrong card provider", err)
 			}
 			if _, err = rpc("pro_recharge", map[string]any{"session": map[string]any{"access_token": proAutoToken(current, fmt.Sprint(n)), "user": map[string]any{"email": current}, "account": map[string]any{"id": "personal-id"}}}); err != nil {
+				if n == 1 {
+					held, _, readErr := st.GPTPayCard(firstCard)
+					if readErr != nil || held.Available || held.PendingAccounts != 1 {
+						t.Error("failed payment freed the original card before automatic retry", held, readErr)
+					}
+					if reserveErr := st.ReserveProCard("competitor@example.com", firstCard, false); reserveErr == nil {
+						t.Error("another account stole the retry card")
+					}
+				}
 				return err
 			}
 			_, err = rpc("pro_tokens", map[string]any{"tokens": map[string]any{"access_token": proAutoToken(current, "new"), "refresh_token": "fixture-global-rt"}})
@@ -487,8 +498,16 @@ func TestNexovccFundsAndCancellationRequireConfirmedReturn(t *testing.T) {
 		t.Fatal(e)
 	}
 	cancel, e := s.actionNexovccLocked(ctx, nexovccInput{Action: "cancel", CardID: op.CardID, RequestID: "nex-cancel3"})
-	if e != nil || cancel.Status != "succeeded" || f.cancelCalls != 1 || cardCents != 0 || accountCents != 11000 {
+	if e != nil || cancel.Status != "processing" || f.cancelCalls != 1 || cardCents != 0 || accountCents != 11000 {
 		t.Fatal(cancel, e, f.cancelCalls, cardCents, accountCents)
+	}
+	// An increased account balance alone cannot confirm a card's return.
+	if e = s.store.SaveNexovccFinance(nexovcc.Finance{At: time.Now(), Funds: []nexovcc.Fund{{ID: "close-return", Serial: cancel.Serial, Kind: 3002, Amount: "1.00", Currency: "USD", At: cancel.CreatedAt}}}); e != nil {
+		t.Fatal(e)
+	}
+	cancel = s.verifyNexovccOperationLocked(ctx, cancel)
+	if cancel.Status != "succeeded" || cancel.Evidence != "fund:close-return" {
+		t.Fatal("same-card credit not recognized", cancel)
 	}
 	if _, e = s.actionNexovccLocked(ctx, nexovccInput{Action: "cancel", CardID: op.CardID, RequestID: "nex-cancel4"}); e == nil || f.cancelCalls != 1 {
 		t.Fatal("closed card cancelled again", e, f.cancelCalls)

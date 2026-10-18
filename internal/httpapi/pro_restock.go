@@ -211,8 +211,13 @@ func (s *Server) collectProRestock(ctx context.Context, c restock.Config, p mode
 			if local.ProAuto.QuotaPlan != "" {
 				v.PurchasePlan = local.ProAuto.QuotaPlan
 			}
-			if cards[strings.ToLower(strings.TrimSpace(local.Email))].EJHCardID != "" {
-				v.EJH = true
+			card := cards[strings.ToLower(strings.TrimSpace(local.Email))]
+			if card.EJHCardID != "" || card.NexovccCardID != "" {
+				v.EJH = card.EJHCardID != ""
+				v.CardProvider = "ejh"
+				if card.NexovccCardID != "" {
+					v.CardProvider = "nexovcc"
+				}
 				v.PushTimeoutEnabled = local.ProPushTimeoutEnabled
 				v.ForceMergeDeadline = local.ProPushDeadline()
 				if local.ProPushStartedAt != nil && !local.ProPushStartedAt.After(now.Add(5*time.Second)) {

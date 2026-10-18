@@ -61,6 +61,12 @@ func (s *Server) reserveProStartCard(ctx context.Context, email, selected string
 			return card, secret, err
 		}
 		taskProvider, strictProvider = task.CardProvider, task.StrictCardProvider
+	} else {
+		cfg, _, _, err := s.store.ProSettings()
+		if err != nil {
+			return card, secret, err
+		}
+		taskProvider = cfg.AutoCardProvider()
 	}
 	if profile, _, e := s.store.MailAccountCredential(email); e != nil {
 		return card, secret, e
@@ -91,8 +97,8 @@ func (s *Server) reserveProStartCard(ctx context.Context, email, selected string
 		if err != nil || !card.Enabled {
 			return card, secret, fmt.Errorf("请选择已启用的银行卡")
 		}
-		if taskProvider != "" && !store.RestockCardMatches(card, taskProvider, strictProvider) {
-			return card, secret, fmt.Errorf("银行卡不属于本次补货指定卡台")
+		if !store.RestockCardMatches(card, taskProvider, strictProvider) {
+			return card, secret, fmt.Errorf("银行卡不属于本次开通配置的卡台，请刷新后重新选择")
 		}
 		if err = gptpay.ValidateCard(secret, time.Now()); err != nil {
 			return card, secret, err
@@ -133,6 +139,9 @@ func (s *Server) reserveProStartCard(ctx context.Context, email, selected string
 		card, secret, err = s.store.GPTPayCard(card.ID)
 		if err != nil {
 			return card, secret, err
+		}
+		if !store.RestockCardMatches(card, taskProvider, strictProvider) {
+			return card, secret, fmt.Errorf("开通卡台配置已变化，请刷新后重新选择")
 		}
 	}
 	if err = ctx.Err(); err != nil {

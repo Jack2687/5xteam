@@ -1,0 +1,187 @@
+package httpapi
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+
+	"chatgpt-space-merge/internal/nexovcc"
+)
+
+func (s *Server) syncNexovccFinanceLocked(ctx context.Context) error {
+	c, _, err := s.nexovccClientLocked()
+	if err != nil {
+		return err
+	}
+	step := 0
+	f, err := c.ReadFinance(ctx, func(msg string) { s.nexovccProgress(msg, step, 4); step++ })
+	if err == nil {
+		err = s.store.CaptureNexovccRevenue()
+	}
+	if err == nil {
+		err = s.store.SaveNexovccFinance(f)
+	}
+	if err != nil {
+		_ = s.store.NexovccCache("finance_error", err.Error())
+		return err
+	}
+	return s.store.NexovccCache("finance_error", "")
+}
+
+func (s *Server) nexovccCaseMatch(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		GroupID string `json:"group_id"`
+		Reason  string `json:"reason"`
+		Confirm bool   `json:"confirm"`
+	}
+	if decodeJSON(w, r, &in, 4096) != nil {
+		return
+	}
+	if !in.Confirm {
+		writeAPI(w, 400, nil, "请确认账号与流水的对应关系")
+		return
+	}
+	if err := s.store.MatchNexovccCase(r.PathValue("id"), in.GroupID, in.Reason); err != nil {
+		writeAPI(w, 400, nil, err.Error())
+		return
+	}
+	writeAPI(w, 200, map[string]bool{"saved": true}, "")
+}
+
+// A rise in the aggregate wallet balance can be caused by another card or a
+// recharge. Only the same card's uniquely identified transfer confirms arrival.
+func (s *Server) nexovccTransferConfirmedLocked(ctx context.Context, op *nexovcc.Operation, kind int, amount string) bool {
+	expected, err := nexovcc.Cents(amount)
+	if err != nil {
+		return false
+	}
+	if kind == 3002 && expected == 0 {
+		op.Evidence = "卡台已销卡，销卡前余额为 0"
+		return true
+	}
+	var f nexovcc.Finance
+	if s.store.NexovccCached("finance", &f) != nil {
+		return false
+	}
+	if f.At.Before(op.CreatedAt) {
+		if s.syncNexovccFinanceLocked(ctx) != nil {
+			return false
+		}
+		if s.store.NexovccCached("finance", &f) != nil {
+			return false
+		}
+	}
+	candidates := []nexovcc.Fund{}
+	ops, err := s.store.NexovccOperations()
+	if err != nil {
+		return false
+	}
+	for _, r := range f.Funds {
+		if r.Kind != kind || r.Serial != op.Serial || r.Currency != "USD" || r.At.Before(op.CreatedAt.Add(-time.Second)) || r.At.After(op.CreatedAt.Add(24*time.Hour)) {
+			continue
+		}
+		value, err := nexovcc.SignedCents(r.Amount)
+		if kind == 4001 {
+			value = -value
+		}
+		if err != nil || value != expected {
+			continue
+		}
+		used := false
+		for _, prior := range ops {
+			if prior.ID != op.ID && prior.Evidence == "fund:"+r.ID {
+				used = true
+				break
+			}
+		}
+		if !used {
+			candidates = append(candidates, r)
+		}
+	}
+	if len(candidates) != 1 {
+		return false
+	}
+	op.Evidence = "fund:" + candidates[0].ID
+	_ = s.nexovccBalanceLocked(ctx)
+	return true
+}
+
+// Refresh pending returns even while the page is closed. This worker only
+// reads upstream data, shares the operation mutex, and never submits payments.
+func (s *Server) startNexovccMonitor() {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.nexovcc.jobMu.Lock()
+	s.nexovcc.monitorCancel = cancel
+	s.nexovcc.wg.Add(1)
+	s.nexovcc.jobMu.Unlock()
+	go func() {
+		defer s.nexovcc.wg.Done()
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		var last time.Time
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			cfg, _, err := s.store.NexovccSettings()
+			if err != nil || !cfg.Enabled {
+				continue
+			}
+			interval := time.Duration(cfg.PageRefreshSeconds) * time.Second
+			if interval < time.Minute {
+				interval = time.Minute
+			}
+			if time.Since(last) < interval {
+				continue
+			}
+			cases, err := s.store.NexovccCases()
+			if err != nil {
+				continue
+			}
+			pending := false
+			for _, c := range cases {
+				if c.PaymentStatus == "success" && (c.State != "returned" || c.Match == nil) {
+					pending = true
+					break
+				}
+			}
+			ops, err := s.store.NexovccOperations()
+			if err != nil {
+				continue
+			}
+			for _, op := range ops {
+				if !op.Terminal() {
+					pending = true
+				}
+			}
+			if !pending || !s.nexovcc.mu.TryLock() {
+				continue
+			}
+			last = time.Now()
+			s.nexovcc.jobMu.Lock()
+			if s.nexovcc.closed {
+				s.nexovcc.jobMu.Unlock()
+				s.nexovcc.mu.Unlock()
+				return
+			}
+			s.nexovcc.job = nexovccJob{ID: randomRegistrationID(), Status: "running", Message: "自动同步回款与资金流水", Total: 4}
+			s.nexovcc.jobMu.Unlock()
+			workCtx, stop := context.WithTimeout(ctx, 10*time.Minute)
+			err = s.syncNexovccLocked(workCtx)
+			stop()
+			s.nexovcc.jobMu.Lock()
+			s.nexovcc.job.Status = "completed"
+			s.nexovcc.job.Message = "回款与资金流水已更新"
+			s.nexovcc.job.Done = s.nexovcc.job.Total
+			if err != nil {
+				s.nexovcc.job.Status = "failed"
+				s.nexovcc.job.Message = fmt.Sprint(err)
+			}
+			s.nexovcc.jobMu.Unlock()
+			s.nexovcc.mu.Unlock()
+		}
+	}()
+}

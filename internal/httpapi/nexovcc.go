@@ -21,37 +21,43 @@ import (
 
 // Overlay only the general Pro views. EJH cost and reconciliation endpoints
 // continue to use their existing EJH-only source.
-func (s *Server) applyNexovccCaseStates(cases []ejh.Case) error {
+type proFinancialCase struct {
+	ejh.Case
+	Nexovcc *store.NexovccCase `json:"nexovcc,omitempty"`
+}
+
+func (s *Server) proFinancialCases(cases []ejh.Case) ([]proFinancialCase, error) {
+	out := make([]proFinancialCase, len(cases))
 	needed := false
 	for _, c := range cases {
 		needed = needed || c.CardType == "nexovcc"
 	}
-	if !needed {
-		return nil
+	byID := map[string]store.NexovccCase{}
+	if needed {
+		rows, err := s.store.NexovccCases()
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range rows {
+			byID[n.ID] = n
+		}
 	}
-	rows, err := s.store.NexovccCases()
-	if err != nil {
-		return err
-	}
-	byID := make(map[string]store.NexovccCase, len(rows))
-	for _, n := range rows {
-		byID[n.ID] = n
-	}
-	for i := range cases {
-		c := &cases[i]
+	for i, c := range cases {
+		out[i].Case = c
 		if n, ok := byID[c.ID]; ok && c.CardType == "nexovcc" {
-			c.State = n.State
-			c.RequestedAt = nil
-			c.RequestSource = ""
+			out[i].Nexovcc = &n
+			out[i].State = n.State
+			out[i].RequestedAt = nil
+			out[i].RequestSource = ""
 			if at, err := time.Parse(time.RFC3339Nano, n.RequestedAt); err == nil {
-				c.RequestedAt = &at
-				if n.RequestedAt == n.UpdatedAt {
-					c.RequestSource = "manual"
+				out[i].RequestedAt = &at
+				if n.ManualState == "waiting" {
+					out[i].RequestSource = "manual"
 				}
 			}
 		}
 	}
-	return nil
+	return out, nil
 }
 
 type nexovccJob struct {
@@ -63,15 +69,16 @@ type nexovccJob struct {
 	Operation *nexovcc.Operation `json:"operation,omitempty"`
 }
 type nexovccRuntime struct {
-	mu          sync.Mutex
-	client      *nexovcc.Client
-	fingerprint [32]byte
-	transport   nexovcc.Transport
-	jobMu       sync.Mutex
-	job         nexovccJob
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	closed      bool
+	mu            sync.Mutex
+	client        *nexovcc.Client
+	fingerprint   [32]byte
+	transport     nexovcc.Transport
+	jobMu         sync.Mutex
+	job           nexovccJob
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	closed        bool
+	monitorCancel context.CancelFunc
 }
 type nexovccInput struct {
 	Action     string `json:"action"`
@@ -90,6 +97,8 @@ func (s *Server) nexovccRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/nexovcc/settings", s.getNexovccSettings)
 	m.HandleFunc("PUT /api/nexovcc/settings", s.saveNexovccSettings)
 	m.HandleFunc("GET /api/nexovcc/dashboard", s.nexovccDashboard)
+	m.HandleFunc("GET /api/nexovcc/occupancy/{id}", s.getEJHOccupancyOrder)
+	m.HandleFunc("POST /api/nexovcc/occupancy/{id}/resolve", s.resolveNexovccOccupancy)
 	m.HandleFunc("POST /api/nexovcc/run", s.runNexovcc)
 	m.HandleFunc("GET /api/nexovcc/job", func(w http.ResponseWriter, r *http.Request) {
 		s.nexovcc.jobMu.Lock()
@@ -99,10 +108,14 @@ func (s *Server) nexovccRoutes(m *http.ServeMux) {
 	})
 	m.HandleFunc("POST /api/nexovcc/cards/{id}/private", s.nexovccPrivate)
 	m.HandleFunc("PUT /api/nexovcc/cases/{id}", s.nexovccCaseState)
+	m.HandleFunc("PUT /api/nexovcc/cases/{id}/match", s.nexovccCaseMatch)
 }
 func (s *Server) stopNexovcc() {
 	s.nexovcc.jobMu.Lock()
 	s.nexovcc.closed = true
+	if s.nexovcc.monitorCancel != nil {
+		s.nexovcc.monitorCancel()
+	}
 	if s.nexovcc.cancel != nil {
 		s.nexovcc.cancel()
 	}
@@ -187,7 +200,14 @@ func (s *Server) nexovccDashboard(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, 500, nil, "读取产品缓存失败")
 		return
 	}
-	writeAPI(w, 200, map[string]any{"cards": rows, "operations": ops, "cases": cases, "balance": balance, "products": products}, "")
+	var finance nexovcc.Finance
+	var financeError string
+	if e = s.store.NexovccCached("finance", &finance); e != nil {
+		writeAPI(w, 500, nil, "读取环球财务缓存失败")
+		return
+	}
+	_ = s.store.NexovccCached("finance_error", &financeError)
+	writeAPI(w, 200, map[string]any{"cards": rows, "operations": ops, "cases": cases, "balance": balance, "products": products, "finance": finance, "groups": nexovcc.Groups(finance), "finance_error": financeError}, "")
 }
 func (s *Server) nexovccProgress(message string, done, total int) {
 	s.nexovcc.jobMu.Lock()
@@ -201,12 +221,12 @@ func (s *Server) runNexovcc(w http.ResponseWriter, r *http.Request) {
 	if decodeJSON(w, r, &in, 16<<10) != nil {
 		return
 	}
-	allowed := map[string]bool{"sync": true, "balance": true, "open": true, "refresh": true, "deposit": true, "withdraw": true, "freeze": true, "unfreeze": true, "cancel": true, "remark": true, "resolve": true}
+	allowed := map[string]bool{"sync": true, "finance": true, "balance": true, "open": true, "refresh": true, "deposit": true, "withdraw": true, "freeze": true, "unfreeze": true, "cancel": true, "remark": true, "resolve": true}
 	if !allowed[in.Action] {
 		writeAPI(w, 400, nil, "环球操作无效")
 		return
 	}
-	if in.Action != "sync" && in.Action != "balance" && in.Action != "refresh" && !in.Confirm {
+	if in.Action != "sync" && in.Action != "finance" && in.Action != "balance" && in.Action != "refresh" && !in.Confirm {
 		writeAPI(w, 400, nil, "请确认本次操作")
 		return
 	}
@@ -241,6 +261,8 @@ func (s *Server) runNexovcc(w http.ResponseWriter, r *http.Request) {
 		switch in.Action {
 		case "sync":
 			e = s.syncNexovccLocked(ctx)
+		case "finance":
+			e = s.syncNexovccFinanceLocked(ctx)
 		case "balance":
 			e = s.nexovccBalanceLocked(ctx)
 		case "refresh":
@@ -340,6 +362,22 @@ func (s *Server) syncNexovccLocked(ctx context.Context) error {
 		if !card.Imported || card.Error != "" {
 			if _, e = s.refreshNexovccLocked(ctx, card.ID, ""); e != nil {
 				failures++
+			}
+		}
+	}
+	if e = s.syncNexovccFinanceLocked(ctx); e != nil {
+		return fmt.Errorf("卡片已同步，财务同步未完成：%w", e)
+	}
+	// Query only. Never replay mutations when reconciling pending operations.
+	ops, e := s.store.NexovccOperations()
+	if e != nil {
+		return e
+	}
+	for _, op := range ops {
+		if !op.Terminal() && op.Serial != "" {
+			op = s.verifyNexovccOperationLocked(ctx, op)
+			if e = s.store.SaveNexovccOperation(op); e != nil {
+				return e
 			}
 		}
 	}
@@ -617,14 +655,7 @@ func (s *Server) verifyNexovccOperationLocked(ctx context.Context, op nexovcc.Op
 		confirmed = card.Remark == op.Remark
 	case "cancel":
 		if card.Status == "4" {
-			if e = s.nexovccBalanceLocked(ctx); e == nil {
-				var balance nexovcc.Balance
-				_ = s.store.NexovccCached("balance", &balance)
-				before, be := nexovcc.Cents(op.BeforeAccountBalance)
-				now, ne := nexovcc.Cents(balance.Amount)
-				held, he := nexovcc.Cents(op.BeforeBalance)
-				confirmed = be == nil && ne == nil && he == nil && now >= before+held
-			}
+			confirmed = s.nexovccTransferConfirmedLocked(ctx, &op, 3002, op.BeforeBalance)
 			if !confirmed {
 				op.Error = "卡台已销卡，剩余余额回到账户仍待核实"
 			}
@@ -636,7 +667,14 @@ func (s *Server) verifyNexovccOperationLocked(ctx context.Context, op nexovcc.Op
 			op.Error = "冻结请求已受理，请在环球后台核实冻结状态后确认"
 		}
 	case "deposit", "withdraw":
-		op.Error = "请求已受理，已刷新卡余额；请核实卡内及账户资金实际变动后确认"
+		kind := 4002
+		if op.Action == "deposit" {
+			kind = 4001
+		}
+		confirmed = s.nexovccTransferConfirmedLocked(ctx, &op, kind, op.Amount)
+		if !confirmed {
+			op.Error = "请求已受理，等待同卡资金流水确认到账；可稍后同步或查询原操作"
+		}
 	}
 	if confirmed {
 		op.Status = "succeeded"
@@ -653,6 +691,11 @@ func (s *Server) resolveNexovccLocked(ctx context.Context, in nexovccInput) (nex
 		return op, nil
 	}
 	if in.Outcome == "query" {
+		if op.Action == "withdraw" || op.Action == "deposit" || op.Action == "cancel" {
+			if e = s.syncNexovccFinanceLocked(ctx); e != nil {
+				return op, e
+			}
+		}
 		if op.Action == "open" && op.Serial == "" {
 			if in.Serial == "" {
 				return op, fmt.Errorf("请先同步卡片，在环球后台核对操作编号备注后填写对应序列号")

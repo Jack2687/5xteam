@@ -14,9 +14,10 @@ import ProSchedulePanel from './ProSchedulePanel.vue'
 import { caseSummary, cardHasCase } from '../ejh'
 import ReturnCaseLine from './ReturnCaseLine.vue'
 import CardAccountPreview from './CardAccountPreview.vue'
+import NexovccProCasesDialog from './NexovccProCasesDialog.vue'
 
 const props = defineProps({ mode: String, defaultPageSize: { type: Number, default: 10 }, adminAccounts: { type: Array, default: () => [] } })
-const emit = defineEmits(['saved'])
+const emit = defineEmits(['saved','open-card'])
 const settings = reactive({ terms_accepted: false, provider: 'tokenseek', country: 'PH', credit_quantity: 0, url: 'https://gptpay.tokenseek.app/api/v1', plan_code: 'pro5', key_present: false, api_key: '', session_timeout_minutes: 30,card_account_limit:3 })
 const providerDrafts = new Map()
 const savedURLs = new Map(), catalogEpoch = ref(0)
@@ -76,8 +77,10 @@ const automation = reactive({ scheduled_enabled:false,max_unmerged:5,schedule_in
 const selectedAdmin = computed(() => props.adminAccounts.find(a => a.id === automation.target_admin_id))
 Object.assign(automation,{card_provider:'ejh',nexovcc_auto_open:false,nexovcc_template_id:'',nexovcc_daily_open_limit:1,nexovcc_daily_amount_limit:'',ejh_auto_open:false,ejh_template_id:'',ejh_daily_open_limit:1,ejh_daily_amount_limit:'',force_merge_enabled:false,force_merge_minutes:60})
 const nexovccTemplates=ref([])
+const nexovccCasesDialog=ref(null)
+function showCardAccounts(card){if(card.card_type==='nexovcc')nexovccCasesDialog.value.open({cardID:associated(card).find(c=>c.nexovcc)?.nexovcc.card_id||card.id});else cardDetail.value=card}
 const ejhTemplates=ref([]),cardCases=ref([]),cardDetail=ref(null)
-function associated(card){return cardCases.value.filter(c=>cardHasCase(card,c))}
+function associated(card){return cardCases.value.filter(c=>cardHasCase(card,c)||c.nexovcc?.card_id===card.id)}
 function cardHint(card){return associated(card).slice(0,30).map(caseSummary).join('\n')||'暂无关联账号'}
 const configSection = ref('purchase')
 const configSections = [
@@ -190,6 +193,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(catalogTimer); catalogCont
 
 <template>
   <div class="gptpay-panel view-stack">
+    <NexovccProCasesDialog ref="nexovccCasesDialog" :default-page-size="defaultPageSize" @open-card="emit('open-card',$event)" @updated="load"/>
     <Teleport to="body"><div v-if="cardDetail" class="modal-backdrop" @click.self="cardDetail=null"><section class="modal" style="max-height:80vh;overflow:auto"><h2>{{cardDetail.name}} · 关联账号</h2><ReturnCaseLine v-for="c in associated(cardDetail)" :key="c.id" :row="c"/><p v-if="!associated(cardDetail).length">暂无关联账号</p><button class="btn" @click="cardDetail=null">关闭</button></section></div></Teleport>
     <MessageBar v-if="message.text" :message="message" />
     <form v-if="mode === 'settings'" class="automation-config" @submit.prevent="saveSettings" @invalid.capture="revealInvalid">
@@ -290,7 +294,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(catalogTimer); catalogCont
         <div class="card-filter" role="group" aria-label="银行卡筛选"><button v-for="[value,label] in [['available','可开通'],['all','全部']]" :key="value" type="button" :disabled="busy" :class="{active:cardFilter===value}" :aria-pressed="cardFilter===value" @click="changeCardFilter(value)">{{label}}</button><span>{{busy?'正在读取…':`共 ${total} 张`}}</span></div>
         <div class="table-shell"><table><thead><tr><th>名称</th><th>类型</th><th>银行卡</th><th>已开通账号</th><th>有效期</th><th>状态</th><th>操作</th></tr></thead><tbody>
           <tr v-if="!rows.length"><td colspan="7" class="empty-cell">{{busy?'正在读取银行卡…':cardFilter==='available'?'暂无可开通银行卡，可切换“全部”查看':'暂无银行卡'}}</td></tr>
-          <tr v-for="card in rows" :key="card.id"><td>{{ card.name }}</td><td>{{providerName(card.card_type)}}</td><td>•••• {{ card.last4 }}</td><td><CardAccountPreview :rows="associated(card)"><button class="btn ghost compact" @click="cardDetail=card">{{card.opened_accounts||0}} / {{card.account_limit||3}}</button></CardAccountPreview><small class="order-id">{{ card.max_accounts ? '单独设置' : card.card_type==='ejh'?'EJH 默认':card.card_type==='nexovcc'?'环球默认':'沿用全局' }}</small><small class="order-id">在途 {{card.pending_accounts||0}} · 剩余 {{card.remaining_accounts??0}}</small><CardOccupancy v-if="card.card_type==='ejh'" :card="card" @updated="load" /></td><td>{{ card.exp_year }}-{{ String(card.exp_month).padStart(2, '0') }}</td><td><PaymentCardStatus :card="card" /></td><td><div class="row-actions"><button class="btn ghost compact" :disabled="busy || isClosedCard(card)" @click="toggle(card)">{{ isClosedCard(card) ? '已销卡' : card.enabled ? '禁用' : '启用' }}</button><button class="btn ghost compact" :disabled="busy" @click="edit(card)">编辑</button><button class="btn ghost compact danger-text" :disabled="busy" @click="remove(card)">删除</button></div></td></tr>
+          <tr v-for="card in rows" :key="card.id"><td>{{ card.name }}</td><td>{{providerName(card.card_type)}}</td><td>•••• {{ card.last4 }}</td><td><CardAccountPreview :rows="associated(card)"><button class="btn ghost compact" @click="showCardAccounts(card)">{{card.opened_accounts||0}} / {{card.account_limit||3}}</button></CardAccountPreview><small class="order-id">{{ card.max_accounts ? '单独设置' : card.card_type==='ejh'?'EJH 默认':card.card_type==='nexovcc'?'环球默认':'沿用全局' }}</small><small class="order-id">在途 {{card.pending_accounts||0}} · 剩余 {{card.remaining_accounts??0}}</small><CardOccupancy v-if="['ejh','nexovcc'].includes(card.card_type)" :card="card" @updated="load" /></td><td>{{ card.exp_year }}-{{ String(card.exp_month).padStart(2, '0') }}</td><td><PaymentCardStatus :card="card" /></td><td><div class="row-actions"><button class="btn ghost compact" :disabled="busy || isClosedCard(card)" @click="toggle(card)">{{ isClosedCard(card) ? '已销卡' : card.enabled ? '禁用' : '启用' }}</button><button class="btn ghost compact" :disabled="busy" @click="edit(card)">编辑</button><button class="btn ghost compact danger-text" :disabled="busy" @click="remove(card)">删除</button></div></td></tr>
         </tbody></table></div>
         <Pagination :page="page" :page-size="pageSize" :total="total" @update:page="changePage" @update:page-size="changeSize" />
       </section>

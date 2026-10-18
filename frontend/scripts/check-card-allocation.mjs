@@ -17,7 +17,10 @@ for (const file of ['ProRechargeDialog.vue', 'ProAutoDialog.vue']) {
    if(options) return {pro_auto:{status:'running'}}
    if(path==='/api/pro-settings')return {card_provider:provider,ejh_auto_open:provider==='ejh'?auto:!auto,nexovcc_auto_open:provider==='nexovcc'?auto:!auto}
    if(path==='/api/gptpay/settings')return {provider:'tokenseek',plan_code:'pro5',key_present:true}
-   if(path.startsWith('/api/gptpay/cards'))return {items:available?[{id:'existing'}]:[],total:available?1:0}
+   if(path.startsWith('/api/gptpay/cards')){
+    assert.equal(new URL(path,'http://local').searchParams.get('card_provider'),'configured',file+' must filter the issuer before pagination')
+    return {items:available?[{id:'existing'}]:[],total:available?1:0}
+   }
    if(path.startsWith('/api/gptpay/orders'))return {items:[]}
    return {}
   }})
@@ -32,6 +35,21 @@ for (const file of ['ProRechargeDialog.vue', 'ProAutoDialog.vue']) {
   assert.equal(ctx.cardID.value,auto?'':available?'existing':'')
  }
  assert.ok(source.includes('无可用卡时从 ${autoCardLabel} 补卡'))
+ if(file==='ProAutoDialog.vue') {
+  const names=['active','resumable','retryCurrent','restartable','canStart']
+  const state=ref({restock_retry_available:true,steps:{}})
+  const ctx=vm.createContext({computed,state})
+  const flags=parsed.statements.filter(s=>ts.isVariableStatement(s)&&s.declarationList.declarations.some(d=>names.includes(d.name.getText(parsed)))).map(s=>s.getText(parsed)).join('\n')
+  vm.runInContext(flags+'\nthis.flags={retryCurrent,restartable,canStart}',ctx)
+  assert.equal(ctx.flags.retryCurrent.value,true,'pre-workflow failure needs explicit retry')
+  assert.equal(ctx.flags.restartable.value,true)
+  assert.equal(ctx.flags.canStart.value,false,'claimed account must not appear as a new start')
+  state.value.status='running'
+  assert.equal(ctx.flags.retryCurrent.value,false)
+  state.value={steps:{}}
+  assert.equal(ctx.flags.retryCurrent.value,false)
+  assert.equal(ctx.flags.canStart.value,true)
+ }
 }
 const ejh=readFileSync(new URL('../src/components/EJHManagementView.vue',import.meta.url),'utf8')
 for(const [code,label] of [['ecom','跨境电商'],['flight','机票'],['hotel','酒店'],['trv','非酒店机票']]) assert.ok(ejh.includes('<option value="'+code+'">'+code+' · '+label+'</option>'))

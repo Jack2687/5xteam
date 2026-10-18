@@ -14,7 +14,7 @@ const autoCardEnabled=computed(()=>settings.card_provider==='nexovcc'?settings.n
 const autoCardLabel=computed(()=>settings.card_provider==='nexovcc'?'环球':'EJH')
 const chosen = computed(() => cards.value.find(card => card.id === cardID.value))
 let requestID = '', timer, disposed = false, generation = 0
-async function loadCards() { const result = await api(`/api/gptpay/cards?page=${page.value}&page_size=${pageSize.value}&enabled=true`); cards.value = result.items || []; total.value = result.total || 0; cardID.value = autoCardEnabled.value ? '' : cards.value[0]?.id || '' }
+async function loadCards() { const result = await api(`/api/gptpay/cards?page=${page.value}&page_size=${pageSize.value}&enabled=true&card_provider=configured`); cards.value = result.items || []; total.value = result.total || 0; cardID.value = autoCardEnabled.value ? '' : cards.value[0]?.id || '' }
 async function open(account) {
   if (busy.value) return
   generation++; clearTimeout(timer); opened.value = true; email.value = account.email; order.value = null; error.value = ''; page.value = 1; pageSize.value = props.defaultPageSize || 10; cards.value = []; cardID.value = ''; requestID = payRequestID(); busy.value = true

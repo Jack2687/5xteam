@@ -54,6 +54,12 @@ const freeAccounts = ref([])
 const proAccounts = ref([])
 const referenceLoaded = reactive({ admins: false, proxies: false, pro: false })
 const teamEntryEmail = ref('')
+const nexovccEntry = ref(null)
+function openNexovccCard(entry) {
+ if(!entry?.cardID)return
+ nexovccEntry.value={...entry}
+ selectTab('nexovcc')
+}
 const ejhEntry = ref(null)
 function openEJHCard(entry) {
   if (!entry?.cardID || !entry?.email) return
@@ -166,9 +172,9 @@ onMounted(checkAuth)
     <main class="app-main">
       <div v-if="loadingError" class="global-alert"><strong>数据加载失败</strong><span>{{ loadingError }}</span><button type="button" @click="loadingError = ''; load()">重试</button></div>
       <ProRestockView v-if="settings && current === 'pro-restock'" :default-page-size="settings.default_page_size || 10" />
-      <ProManagementView v-if="settings && current === 'pro'" :accounts="proAccounts" :admin-accounts="adminAccounts" :default-page-size="settings.default_page_size || 10" @reload="syncProAccounts" @open-ejh-card="openEJHCard" />
+      <ProManagementView v-if="settings && current === 'pro'" :accounts="proAccounts" :admin-accounts="adminAccounts" :default-page-size="settings.default_page_size || 10" @reload="syncProAccounts" @open-ejh-card="openEJHCard" @open-nexovcc-card="openNexovccCard" />
       <EJHManagementView v-if="settings && current === 'ejh'" :default-page-size="settings.default_page_size || 10" :entry="ejhEntry" @entry-applied="ejhEntry=null" />
-      <NexovccManagementView v-if="settings && current === 'nexovcc'" :default-page-size="settings.default_page_size || 10" />
+      <NexovccManagementView v-if="settings && current === 'nexovcc'" :default-page-size="settings.default_page_size || 10" :entry="nexovccEntry" @entry-applied="nexovccEntry=null" />
       <EJHFinanceView v-if="settings && current === 'ejh-finance'" :default-page-size="settings.default_page_size || 10" />
       <EJHReconciliationView v-if="settings && current === 'ejh-reconciliation'" :default-page-size="settings.default_page_size || 10" @navigate="selectTab" />
       <template v-if="spaceMergeVisited">

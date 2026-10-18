@@ -409,6 +409,9 @@ func (s *Store) UpdateGPTPayOrder(v gptpay.Order) error {
 	if _, err = tx.Exec(`UPDATE pro_card_usage SET status=? WHERE order_id=?`, v.Status, v.ID); err != nil {
 		return err
 	}
+	if err = holdFailedProAutoCard(tx, current, v); err != nil {
+		return err
+	}
 	if err = ejhSaveCaseTx(tx, v); err != nil {
 		return err
 	}

@@ -10,7 +10,7 @@ const code=readFileSync(new URL('../src/components/NexovccManagementView.vue',im
  .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm,'')
 const requests=[]
 const context=vm.createContext({...nexovcc,ref,reactive,computed,watch,
- defineProps:()=>({defaultPageSize:10}),onMounted(){},onBeforeUnmount(){},
+ defineProps:()=>({defaultPageSize:10}),defineEmits:()=>()=>{},onMounted(){},onBeforeUnmount(){},
  clearTimeout(){},setTimeout(){},formatTime:value=>value,
  async api(url,options={}){
   const body=options.body===undefined?undefined:JSON.parse(JSON.stringify(options.body))

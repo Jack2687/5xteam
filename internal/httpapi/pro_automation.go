@@ -76,13 +76,21 @@ func (s *Server) getProAutomation(w http.ResponseWriter, r *http.Request) {
 	}
 	p.ApplyProStageOverrides(&progress)
 	state.Error = progress.Errors[state.Stage]
+	restockRetryAvailable := false
+	if state.ID == "" && state.OrderID == "" && p.ProRestockTaskID != "" {
+		if task, e := s.store.ProRestockDispatchTask(p.ProRestockTaskID); e == nil && task.CardProvider == "nexovcc" && task.Status == "attention" {
+			restockRetryAvailable = true
+			state.Error = task.Message
+		}
+	}
 	writeAPI(w, 200, struct {
 		model.ProAutoState
-		StageProgress       model.ProStageDisplay `json:"stage_progress"`
-		PaymentStatus       string                `json:"payment_status"`
-		PaymentRetryBlocked bool                  `json:"payment_retry_blocked"`
-		PaymentRetryHint    string                `json:"payment_retry_hint"`
-	}{state, progress, paymentStatus, paymentRetryBlocked, paymentRetryHint}, "")
+		StageProgress         model.ProStageDisplay `json:"stage_progress"`
+		PaymentStatus         string                `json:"payment_status"`
+		PaymentRetryBlocked   bool                  `json:"payment_retry_blocked"`
+		PaymentRetryHint      string                `json:"payment_retry_hint"`
+		RestockRetryAvailable bool                  `json:"restock_retry_available"`
+	}{state, progress, paymentStatus, paymentRetryBlocked, paymentRetryHint, restockRetryAvailable}, "")
 }
 
 func (s *Server) autoProUpdate(email, stage, status, message string) error {
