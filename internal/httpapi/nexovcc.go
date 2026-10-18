@@ -400,6 +400,17 @@ func (s *Server) syncNexovccLocked(ctx context.Context) error {
 	return nil
 }
 func (s *Server) refreshNexovccLocked(ctx context.Context, id, serial string) (nexovcc.Card, error) {
+	if id == "" && serial != "" {
+		id = nexovcc.CardID(serial)
+	}
+	// Deleted cards have no detail or balance endpoint on the supplier. Their
+	// terminal status from the card list remains usable for receipt matching.
+	if old, err := s.store.NexovccCard(id); err == nil && old.Status == "4" {
+		if serial != "" && old.Serial != serial {
+			return nexovcc.Card{}, fmt.Errorf("环球返回了不同卡片，请核实")
+		}
+		return old, nil
+	}
 	c, _, e := s.nexovccClientLocked()
 	if e != nil {
 		return nexovcc.Card{}, e
@@ -414,6 +425,26 @@ func (s *Server) refreshNexovccLocked(ctx context.Context, id, serial string) (n
 	data, e := c.Do(ctx, "/api/card/getUserCardDetail", map[string]any{"serial_no": serial})
 	if e != nil {
 		return nexovcc.Card{}, e
+	}
+	if data == nil {
+		// A successful deletion returns code=0/data=null from the detail
+		// endpoint. Null alone is not evidence: require the exact card in the
+		// paginated list with the documented deleted status.
+		rows, err := c.Pages(ctx, "/api/card/findUserCardList")
+		if err != nil {
+			return nexovcc.Card{}, err
+		}
+		for _, row := range rows {
+			if nexovcc.String(row["serial_no"]) != serial || nexovcc.String(row["status"]) != "4" {
+				continue
+			}
+			card, err := nexovcc.CardFrom(row)
+			if err != nil {
+				return card, err
+			}
+			return s.store.SaveNexovccCard(card, nil)
+		}
+		return nexovcc.Card{}, fmt.Errorf("卡片详情暂未返回，等待卡列表同步状态")
 	}
 	m, e := nexovcc.Object(data)
 	if e != nil {
@@ -582,7 +613,7 @@ func (s *Server) verifyNexovccOperationLocked(ctx context.Context, op nexovcc.Op
 	}
 	card, e := s.refreshNexovccLocked(ctx, op.CardID, op.Serial)
 	if e != nil {
-		op.Error = "结果同步失败，请稍后核实：" + e.Error()
+		op.Error = "结果暂未同步，系统会自动继续查询：" + e.Error()
 		return op
 	}
 	confirmed := false
@@ -595,8 +626,10 @@ func (s *Server) verifyNexovccOperationLocked(ctx context.Context, op nexovcc.Op
 		if card.Status == "4" {
 			confirmed = s.nexovccTransferConfirmedLocked(ctx, &op, 3002, op.BeforeBalance)
 			if !confirmed {
-				op.Error = "卡台已销卡，剩余余额回到账户仍待核实"
+				op.Error = "卡台已销卡，正在自动同步余款到账"
 			}
+		} else {
+			op.Error = "正在自动同步销卡状态及余款到账"
 		}
 	case "freeze", "unfreeze":
 		if op.Action == "unfreeze" {

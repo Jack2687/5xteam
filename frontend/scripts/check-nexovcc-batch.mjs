@@ -22,7 +22,7 @@ for(const action of ['withdraw_all','cancel','withdraw_cancel']){
    return {id:'batch-job',status:'running',card_total:3,card_done:0,message:'正在处理第一张卡'}
   }
  })
- vm.runInContext(code+';globalThis.view={batchCards,message,job,running,cardAction,submit,dialog};',context)
+ vm.runInContext(code+';globalThis.view={batchCards,message,job,running,cardAction,submit,dialog,resolve};',context)
  await context.view.batchCards({confirm:true,ids:['a','b','c'],action})
  assert.equal(requests.length,1,'batch must execute on server')
  assert.deepEqual(requests[0].card_ids,['a','b','c'])
@@ -39,6 +39,16 @@ for(const action of ['withdraw_all','cancel','withdraw_cancel']){
  await context.view.submit()
  assert.equal(requests.at(-1).card_id,'one')
  assert.equal(requests.at(-1).action,action)
+ polls=0
+ await context.view.resolve({id:'pending-close',status:'processing',action:'withdraw_cancel'})
+ assert.equal(context.view.dialog.value,null,'accepted operations query progress without manual confirmation')
+ assert.equal(requests.at(-1).action,'resolve')
+ assert.equal(requests.at(-1).outcome,'query')
+ assert.equal(requests.at(-1).request_id,'pending-close')
+ const before=requests.length
+ context.view.resolve({id:'uncertain-close',status:'unknown',action:'withdraw_cancel'})
+ assert.equal(requests.length,before,'uncertain operations must retain explicit resolution')
+ assert.equal(context.view.dialog.value.type,'resolve')
 }
 const frozen={card:{id:'f',status:'1',control:'frozen',imported:true},local:{source:'nexovcc',issuer_status:'1',issuer_frozen:true,issuer_locked:true}}
 assert.equal(helpers.cardState(frozen),'已冻结')
