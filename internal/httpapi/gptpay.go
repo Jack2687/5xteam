@@ -135,14 +135,18 @@ func (s *Server) saveGPTPayCard(w http.ResponseWriter, r *http.Request) {
 	v.CardType = ""
 	if input.CardType != nil {
 		v.CardType = *input.CardType
-		if v.CardType != "ejh" && v.CardType != "other" {
-			writeAPI(w, 400, nil, "银行卡类型只能是 EJH 或其他")
+		if v.CardType != "ejh" && v.CardType != "other" && v.CardType != "nexovcc" {
+			writeAPI(w, 400, nil, "银行卡类型只能是 EJH、环球或其他")
+			return
+		}
+		if v.CardType == "nexovcc" && v.Source != "nexovcc" {
+			writeAPI(w, 400, nil, "环球卡请从环球卡台同步导入")
 			return
 		}
 	}
 	v.MaxAccounts = input.MaxAccounts
-	if v.Source == "ejh" && (input.Raw != "" || input.Number != "" || input.CVV != "" || (input.Month != 0 && input.Month != secret.Month) || (input.Year != 0 && input.Year != secret.Year)) {
-		writeAPI(w, 400, nil, "EJH 卡密只能从卡台刷新，不允许手动替换")
+	if (v.Source == "ejh" || v.Source == "nexovcc") && (input.Raw != "" || input.Number != "" || input.CVV != "" || (input.Month != 0 && input.Month != secret.Month) || (input.Year != 0 && input.Year != secret.Year)) {
+		writeAPI(w, 400, nil, "卡台卡密只能从对应卡台刷新，不允许手动替换")
 		return
 	}
 	if input.Raw != "" {
@@ -189,6 +193,10 @@ func (s *Server) listGPTPayCardCases(w http.ResponseWriter, r *http.Request) {
 	cases, err := s.store.EJHCases()
 	if err != nil {
 		writeAPI(w, 500, nil, err.Error())
+		return
+	}
+	if err = s.applyNexovccCaseStates(cases); err != nil {
+		writeAPI(w, 500, nil, "读取环球关联账号失败")
 		return
 	}
 	writeAPI(w, 200, cases, "")
@@ -361,7 +369,7 @@ func (s *Server) createGPTPayOrder(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, 409, nil, "账号正在执行登录或自动任务，未购买新卡")
 		return
 	}
-	card, secret, err := s.reserveProStartCard(r.Context(), email, input.CardID, pro.EJHAutoOpen, false)
+	card, secret, err := s.reserveProStartCard(r.Context(), email, input.CardID, pro.AutoCardEnabled(), false)
 	if err != nil {
 		writeAPI(w, 409, nil, err.Error())
 		return

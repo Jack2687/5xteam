@@ -30,6 +30,7 @@ type Server struct {
 	proFallback               proFallbackRuntime
 	proRestock                proRestockRuntime
 	ejh                       ejhRuntime
+	nexovcc                   nexovccRuntime
 	downstreamMu              sync.Mutex
 	recovery                  seatRecoveryRuntime
 	qualityRunMu              sync.Mutex
@@ -176,6 +177,7 @@ func (s *Server) Close() {
 	s.auditCloseOnce.Do(func() {
 		s.stopProQuality()
 		s.stopEJH()
+		s.stopNexovcc()
 		s.stopSeatRecovery()
 		s.qualityMu.Lock()
 		s.qualityClosed = true
@@ -203,6 +205,7 @@ func (s *Server) Close() {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.ejhRoutes(mux)
+	s.nexovccRoutes(mux)
 	mux.HandleFunc("GET /api/notifications", s.getNotifications)
 	mux.HandleFunc("PUT /api/notifications", s.saveNotifications)
 	mux.HandleFunc("POST /api/notifications/test", s.testNotification)

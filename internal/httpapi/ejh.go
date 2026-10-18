@@ -674,6 +674,12 @@ func (s *Server) validateEJHAutomation(v model.ProSettings) error {
 	if v.ForceMergeEnabled && (v.ForceMergeMinutes < 1 || v.ForceMergeMinutes > 525600 || v.TargetAdminID == "") {
 		return fmt.Errorf("超时合并需设置 1～525600 分钟及目标母号")
 	}
+	if v.CardProvider != "" && v.CardProvider != "ejh" && v.CardProvider != "nexovcc" {
+		return fmt.Errorf("请选择有效卡台")
+	}
+	if v.AutoCardProvider() == "nexovcc" {
+		return s.validateNexovccAutomation(v)
+	}
 	if v.EJHAutoOpen {
 		if v.EJHDailyOpenLimit < 1 || v.EJHDailyOpenLimit > 1000 {
 			return fmt.Errorf("自动开卡每日数量须为 1～1000")
@@ -701,8 +707,10 @@ func (s *Server) ensureEJHCard(ctx context.Context, admissionChecks ...func() er
 	if e != nil {
 		return gptpay.Card{}, e
 	}
-	if len(cards) > 0 {
-		return cards[0], nil
+	for _, card := range cards {
+		if card.Source != "nexovcc" && card.CardType != "nexovcc" {
+			return card, nil
+		}
 	}
 	cards, _, e = s.store.GPTPayCards(int(^uint(0)>>1), 0, false)
 	if e != nil {

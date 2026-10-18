@@ -14,8 +14,8 @@ FROM python:3.11-alpine3.20
 # to 3.11 because parity.json contains AST hashes generated with Python 3.11;
 # Python 3.12 changes ast.dump output even when the source is identical.
 RUN apk add --no-cache nodejs npm libstdc++ ca-certificates tzdata \
-    && python3 -m pip install --no-cache-dir curl_cffi pyotp \
-    && python3 -c "import sys, curl_cffi, pyotp; assert sys.version_info[:2] == (3, 11); print('python protocol dependencies ok')"
+    && python3 -m pip install --no-cache-dir "curl_cffi>=0.16,<0.17" pyotp \
+    && python3 -c "import sys, curl_cffi, pyotp; assert sys.version_info[:2] == (3, 11); print('python protocol dependencies ok'); from curl_cffi.requests.impersonate import BrowserType; BrowserType('chrome150')"
 RUN addgroup -S app && adduser -S -G app app
 WORKDIR /app
 COPY --from=builder /out/chatgpt-space-merge /app/chatgpt-space-merge

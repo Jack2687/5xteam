@@ -50,6 +50,9 @@ func (s *Server) proAccountListWithCards(items []model.MailAccountProfile) ([]pr
 	if err != nil {
 		return nil, err
 	}
+	if err = s.applyNexovccCaseStates(cases); err != nil {
+		return nil, err
+	}
 	byEmail := map[string][]ejh.Case{}
 	for _, c := range cases {
 		byEmail[strings.ToLower(c.Email)] = append(byEmail[strings.ToLower(c.Email)], c)
@@ -671,6 +674,8 @@ func (s *Server) saveProSettings(w http.ResponseWriter, r *http.Request) {
 	previousProvider := current.Provider
 	input.ScheduledEnabled, input.MaxUnmerged, input.ScheduleIntervalSeconds = current.ScheduledEnabled, current.MaxUnmerged, current.ScheduleIntervalSeconds
 	input.EJHAutoOpen, input.EJHTemplateID, input.EJHDailyOpenLimit, input.EJHDailyAmountLimit = current.EJHAutoOpen, current.EJHTemplateID, current.EJHDailyOpenLimit, current.EJHDailyAmountLimit
+	input.CardProvider = current.CardProvider
+	input.NexovccAutoOpen, input.NexovccTemplateID, input.NexovccDailyOpenLimit, input.NexovccDailyAmountLimit = current.NexovccAutoOpen, current.NexovccTemplateID, current.NexovccDailyOpenLimit, current.NexovccDailyAmountLimit
 	input.ForceMergeEnabled, input.ForceMergeMinutes = current.ForceMergeEnabled, current.ForceMergeMinutes
 	input.MergeConcurrency = current.MergeConcurrency
 	now := time.Now()

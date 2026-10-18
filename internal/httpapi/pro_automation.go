@@ -250,7 +250,7 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 		}
 		if order.Status == "failed" {
 			paidRecovery, restartFailed = false, true
-			if input.CardID == "" && !pro.EJHAutoOpen {
+			if input.CardID == "" && !pro.AutoCardEnabled() {
 				input.CardID = order.CardID
 			}
 		}
@@ -263,7 +263,7 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 			if input.Provider == "" {
 				input.Provider = cfg.Provider
 			}
-			if input.CardID == "" && !pro.EJHAutoOpen {
+			if input.CardID == "" && !pro.AutoCardEnabled() {
 				input.CardID = p.ProAuto.CardID
 			}
 		}
@@ -284,9 +284,9 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 			writeAPI(w, 409, nil, "供应商、套餐、国家或点数配置已变化，请重新打开窗口")
 			return
 		}
-		if input.CardID == "" && !pro.EJHAutoOpen {
+		if input.CardID == "" && !pro.AutoCardEnabled() {
 			lock.Unlock()
-			writeAPI(w, 400, nil, "请选择银行卡，或启用 EJH 自动补卡")
+			writeAPI(w, 400, nil, "请选择银行卡，或启用自动补卡")
 			return
 		}
 	}
@@ -322,7 +322,7 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		card, secret, err = s.reserveProStartCard(r.Context(), email, input.CardID, pro.EJHAutoOpen, r.Context().Value(proScheduledContextKey{}) == true, func() error {
+		card, secret, err = s.reserveProStartCard(r.Context(), email, input.CardID, pro.AutoCardEnabled(), r.Context().Value(proScheduledContextKey{}) == true, func() error {
 			latest, _, err := s.store.MailAccountCredential(email)
 			if err != nil {
 				return err
@@ -597,7 +597,7 @@ func (s *Server) proAutoRPC(ctx context.Context, email string, cfg gptpay.Settin
 		}
 		// Only a newly reserved order reaches this boundary. Paid recovery and
 		// repeated RPCs cannot send another start notice or create a payment.
-		s.queueNotification("pro_start", "Pro 全自动开始开通", "账号："+email+"\n套餐："+order.PlanCode+"\n已完成登录，开始提交开通订单")
+		s.queueNotification("pro_start", "Pro 全自动开始开通", "账号："+email+"\n套餐："+order.PlanCode+"\n已完成登录，开始提交开通订单"+s.proCardProviderNotice(order.CardID))
 		order, err = s.submitGPTPayOrder(ctx, order, snap)
 		if err != nil {
 			return nil, err

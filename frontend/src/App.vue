@@ -13,6 +13,7 @@ import SmsManagementView from './components/SmsManagementView.vue'
 import OpenAIAccountsView from './components/OpenAIAccountsView.vue'
 import ProManagementView from './components/ProManagementView.vue'
 import ProRestockView from './components/ProRestockView.vue'
+import NexovccManagementView from './components/NexovccManagementView.vue'
 import EJHManagementView from './components/EJHManagementView.vue'
 import EJHFinanceView from './components/EJHFinanceView.vue'
 import EJHReconciliationView from './components/EJHReconciliationView.vue'
@@ -27,6 +28,7 @@ const nav = [
   { id: 'pro', label: 'Pro 管理', icon: Crown, group: '账号' },
   { id: 'pro-restock', label: 'Pro 自动补货', icon: Waypoints, group: '账号' },
   { id: 'ejh', label: 'EJH 卡台', icon: Crown, group: '卡片与回款' },
+  { id: 'nexovcc', label: '环球卡台', icon: Crown, group: '卡片与回款' },
   { id: 'ejh-finance', label: '成本统计', icon: ChartNoAxesCombined, group: '卡片与回款' },
   { id: 'ejh-reconciliation', label: '财务对账', icon: ChartNoAxesCombined, group: '卡片与回款' },
   { id: 'space-merge', label: '空间合并', icon: ArrowLeftRight, group: '空间合并' },
@@ -166,6 +168,7 @@ onMounted(checkAuth)
       <ProRestockView v-if="settings && current === 'pro-restock'" :default-page-size="settings.default_page_size || 10" />
       <ProManagementView v-if="settings && current === 'pro'" :accounts="proAccounts" :admin-accounts="adminAccounts" :default-page-size="settings.default_page_size || 10" @reload="syncProAccounts" @open-ejh-card="openEJHCard" />
       <EJHManagementView v-if="settings && current === 'ejh'" :default-page-size="settings.default_page_size || 10" :entry="ejhEntry" @entry-applied="ejhEntry=null" />
+      <NexovccManagementView v-if="settings && current === 'nexovcc'" :default-page-size="settings.default_page_size || 10" />
       <EJHFinanceView v-if="settings && current === 'ejh-finance'" :default-page-size="settings.default_page_size || 10" />
       <EJHReconciliationView v-if="settings && current === 'ejh-reconciliation'" :default-page-size="settings.default_page_size || 10" @navigate="selectTab" />
       <template v-if="spaceMergeVisited">

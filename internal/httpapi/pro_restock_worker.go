@@ -526,12 +526,12 @@ func (s *Server) dispatchProRestock(ctx context.Context, c restock.Config, p mod
 		if closed || max(busy, jobs) >= p.Concurrency || ctx.Err() != nil {
 			return
 		}
-		cards, _, e := s.store.GPTPayCards(1, 0, true)
+		cards, e := s.automaticProCards(p)
 		if e != nil {
 			return
 		}
 		card := ""
-		if !p.EJHAutoOpen {
+		if !p.AutoCardEnabled() {
 			if len(cards) == 0 {
 				t.Message = "银行卡没有剩余名额，等待卡片释放"
 				_ = s.store.SaveProRestockTask(t)

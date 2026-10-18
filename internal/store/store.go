@@ -112,6 +112,10 @@ func Open(dataDir string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := s.initializeNexovcc(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := s.initializeProCardTypes(); err != nil {
 		_ = db.Close()
 		return nil, err

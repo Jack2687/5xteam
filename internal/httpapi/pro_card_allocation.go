@@ -6,7 +6,26 @@ import (
 	"time"
 
 	"chatgpt-space-merge/internal/gptpay"
+	"chatgpt-space-merge/internal/model"
 )
+
+// Preserve oldest-first order and keep scheduled/restock allocations on the
+// chosen issuer even when buying new cards is disabled. Other manual cards
+// retain their historical compatibility with the default EJH selection.
+func (s *Server) automaticProCards(cfg model.ProSettings) ([]gptpay.Card, error) {
+	cards, _, err := s.store.GPTPayCards(int(^uint(0)>>1), 0, true)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]gptpay.Card, 0, len(cards))
+	for _, card := range cards {
+		global := card.Source == "nexovcc" || card.CardType == "nexovcc"
+		if global == (cfg.AutoCardProvider() == "nexovcc") {
+			filtered = append(filtered, card)
+		}
+	}
+	return filtered, nil
+}
 
 // Serialize selection, optional issuance and reservation across manual, auto
 // and scheduled starts. The database still enforces physical-card occupancy.
@@ -53,6 +72,9 @@ func (s *Server) reserveProStartCard(ctx context.Context, email, selected string
 		if err = gptpay.ValidateCard(secret, time.Now()); err != nil {
 			return card, secret, err
 		}
+		if card.Source == "nexovcc" && (card.IssuerLocked || card.IssuerStatus != "1") {
+			return card, secret, fmt.Errorf("环球卡片未激活、冻结或状态不可用")
+		}
 		if card.Source == "ejh" && (card.IssuerLocked || (card.IssuerStatus != "1" && card.IssuerStatus != "3")) {
 			return card, secret, fmt.Errorf("卡台卡片未激活、冻结或状态不可用")
 		}
@@ -66,10 +88,10 @@ func (s *Server) reserveProStartCard(ctx context.Context, email, selected string
 			// A previously selectable EJH card may have been claimed by another
 			// task. Only this capacity/occupancy case permits automatic fallback;
 			// frozen, expired and disabled cards are not silently substituted.
-			if autoOpen && card.CardType == "ejh" && (card.RemainingAccounts == 0 || (card.SingleActiveAccount && card.ActiveAccounts > 0)) {
+			if autoOpen && (card.CardType == "ejh" || card.CardType == "nexovcc") && (card.RemainingAccounts == 0 || (card.SingleActiveAccount && card.ActiveAccounts > 0)) {
 				selected = ""
 			} else if card.SingleActiveAccount && card.ActiveAccounts > 0 {
-				return card, secret, fmt.Errorf("EJH 银行卡正在被 %s 占用（一卡同时一个号）；请启用 EJH 自动补卡或等待回款确认到账", card.ActiveEmail)
+				return card, secret, fmt.Errorf("银行卡正在被 %s 占用（一卡同时一个号）；请启用自动补卡或等待回款确认到账", card.ActiveEmail)
 			} else {
 				return card, secret, fmt.Errorf("银行卡没有剩余开通名额或状态不可用")
 			}
@@ -77,9 +99,9 @@ func (s *Server) reserveProStartCard(ctx context.Context, email, selected string
 	}
 	if selected == "" {
 		if !autoOpen {
-			return card, secret, fmt.Errorf("请选择银行卡，或启用 EJH 自动补卡")
+			return card, secret, fmt.Errorf("请选择银行卡，或启用自动补卡")
 		}
-		card, err = s.ensureEJHCard(ctx, admissionChecks...)
+		card, err = s.ensureProviderCard(ctx, admissionChecks...)
 		if err != nil {
 			return card, secret, err
 		}
