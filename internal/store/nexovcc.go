@@ -379,7 +379,7 @@ func (s *Store) NexovccOperation(id string) (nexovcc.Operation, error) {
 	}
 	return v, e
 }
-func (s *Store) BeginNexovccOperation(op nexovcc.Operation) error {
+func (s *Store) BeginNexovccOperation(op nexovcc.Operation, restockIDs ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, e := s.db.Begin()
@@ -429,7 +429,15 @@ func (s *Store) BeginNexovccOperation(op nexovcc.Operation) error {
 		if e = json.Unmarshal([]byte(raw), &cfg); e != nil {
 			return e
 		}
-		if !cfg.NexovccAutoOpen || cfg.CardProvider != "nexovcc" {
+		provider := cfg.AutoCardProvider()
+		if len(restockIDs) > 0 && restockIDs[0] != "" {
+			task, err := restockDispatchTask(tx, restockIDs[0])
+			if err != nil {
+				return err
+			}
+			provider = task.CardProvider
+		}
+		if !cfg.NexovccAutoOpen || provider != "nexovcc" {
 			return fmt.Errorf("环球自动补卡已关闭或切换")
 		}
 		var count int

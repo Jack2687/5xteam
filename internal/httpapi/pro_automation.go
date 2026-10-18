@@ -191,6 +191,9 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 	}
 	pro, subPassword, _, err := s.proAccountPushSettings(p)
 	if err == nil {
+		pro, _, err = s.restockCardSettings(r.Context(), pro)
+	}
+	if err == nil {
 		err = s.validateProAutoPush(p, pro, subPassword)
 	}
 	if err != nil {

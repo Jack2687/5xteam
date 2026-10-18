@@ -467,7 +467,8 @@ func (s *Server) openNexovccLocked(ctx context.Context, id, templateID string, a
 		return op, fmt.Errorf("环球账户余额不足以覆盖开卡金额和预留费用")
 	}
 	op = nexovcc.Operation{ID: id, Action: "open", TemplateID: templateID, ProductID: t.ProductID, Amount: t.Amount, Remark: id, Status: "submitted", Automatic: automatic, BeforeAccountBalance: balance.Amount, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	if e = s.store.BeginNexovccOperation(op); e != nil {
+	taskID, _ := ctx.Value(proRestockContextKey{}).(string)
+	if e = s.store.BeginNexovccOperation(op, taskID); e != nil {
 		return op, e
 	}
 	pid, _ := strconv.ParseInt(t.ProductID, 10, 64)
@@ -762,6 +763,10 @@ func (s *Server) validateNexovccAutomation(v model.ProSettings) error {
 }
 func (s *Server) ensureProviderCard(ctx context.Context, checks ...func() error) (gptpay.Card, error) {
 	p, _, _, e := s.store.ProSettings()
+	if e != nil {
+		return gptpay.Card{}, e
+	}
+	p, _, e = s.restockCardSettings(ctx, p)
 	if e != nil {
 		return gptpay.Card{}, e
 	}

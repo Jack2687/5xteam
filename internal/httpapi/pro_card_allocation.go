@@ -7,20 +7,33 @@ import (
 
 	"chatgpt-space-merge/internal/gptpay"
 	"chatgpt-space-merge/internal/model"
+	"chatgpt-space-merge/internal/store"
 )
+
+func (s *Server) restockCardSettings(ctx context.Context, cfg model.ProSettings) (model.ProSettings, bool, error) {
+	id, _ := ctx.Value(proRestockContextKey{}).(string)
+	if id == "" {
+		return cfg, false, nil
+	}
+	task, err := s.store.ProRestockDispatchTask(id)
+	if err != nil {
+		return cfg, false, err
+	}
+	cfg.CardProvider = task.CardProvider
+	return cfg, task.StrictCardProvider, nil
+}
 
 // Preserve oldest-first order and keep scheduled/restock allocations on the
 // chosen issuer even when buying new cards is disabled. Other manual cards
 // retain their historical compatibility with the default EJH selection.
-func (s *Server) automaticProCards(cfg model.ProSettings) ([]gptpay.Card, error) {
+func (s *Server) automaticProCards(cfg model.ProSettings, strictProvider ...bool) ([]gptpay.Card, error) {
 	cards, _, err := s.store.GPTPayCards(int(^uint(0)>>1), 0, true)
 	if err != nil {
 		return nil, err
 	}
 	filtered := make([]gptpay.Card, 0, len(cards))
 	for _, card := range cards {
-		global := card.Source == "nexovcc" || card.CardType == "nexovcc"
-		if global == (cfg.AutoCardProvider() == "nexovcc") {
+		if store.RestockCardMatches(card, cfg.AutoCardProvider(), len(strictProvider) > 0 && strictProvider[0]) {
 			filtered = append(filtered, card)
 		}
 	}
@@ -40,6 +53,15 @@ func (s *Server) reserveProStartCard(ctx context.Context, email, selected string
 		}
 	}
 	taskID, _ := ctx.Value(proRestockContextKey{}).(string)
+	var taskProvider string
+	var strictProvider bool
+	if taskID != "" {
+		task, err := s.store.ProRestockDispatchTask(taskID)
+		if err != nil {
+			return card, secret, err
+		}
+		taskProvider, strictProvider = task.CardProvider, task.StrictCardProvider
+	}
 	if profile, _, e := s.store.MailAccountCredential(email); e != nil {
 		return card, secret, e
 	} else if profile.ProRestockTaskID != "" && profile.ProRestockTaskID != taskID {
@@ -68,6 +90,9 @@ func (s *Server) reserveProStartCard(ctx context.Context, email, selected string
 		card, secret, err = s.store.GPTPayCard(selected)
 		if err != nil || !card.Enabled {
 			return card, secret, fmt.Errorf("请选择已启用的银行卡")
+		}
+		if taskProvider != "" && !store.RestockCardMatches(card, taskProvider, strictProvider) {
+			return card, secret, fmt.Errorf("银行卡不属于本次补货指定卡台")
 		}
 		if err = gptpay.ValidateCard(secret, time.Now()); err != nil {
 			return card, secret, err

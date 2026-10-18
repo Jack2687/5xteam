@@ -49,7 +49,7 @@ onUnmounted(()=>{disposed=true;revision++;clearInterval(timer);request.dispose()
 <component :is="compact?'dialog':'div'" ref="detailDialog" :class="{'fallback-dialog':compact}" :aria-label="compact?'兜底调度详情':undefined" @click="compact&&$event.target===detailDialog&&detailDialog.close()">
 <article class="fallback-panel" aria-label="兜底调度">
  <button v-if="compact" type="button" class="close-detail" aria-label="关闭兜底详情" @click="detailDialog.close()">✕</button>
- <header><div><h2>兜底调度</h2><p>空组自动兜底；可在补货配置中开启禁补时段强制兜底</p></div><span class="badge">{{state?phases[state.plan.phase]:'读取状态中…'}}</span></header>
+ <header><div><h2>兜底调度</h2><p>空组自动兜底；可在补货配置中开启完全禁补时段强制兜底</p></div><span class="badge">{{state?phases[state.plan.phase]:'读取状态中…'}}</span></header>
  <p v-if="error||fetchError" class="alert error" role="alert">{{error||fetchError}}</p><p v-if="notice" class="alert" role="status">{{notice}}</p>
  <template v-if="state">
   <p>{{state.plan.reason}}</p>
@@ -65,7 +65,7 @@ onUnmounted(()=>{disposed=true;revision++;clearInterval(timer);request.dispose()
   <form v-if="settings" @submit.prevent="save" @input="dirty=true">
    <fieldset :disabled="busy">
    <label class="check"><input v-model="form.enabled" type="checkbox">启用兜底调度</label>
-   <p>沿用 Pro 推送的主 Sub2 连接和自动补货选定的监控组，通常按分组实际账号数量判断；若开启“禁补时段立即启用兜底调度”，时段内优先开启，结束后恢复空组判断。与补货总开关、观察模式独立；登录、开通、授权期间仍为空组就继续兜底。关闭此开关、取消选择或更换连接后，原账号调度会收尾关闭。</p>
+   <p>沿用 Pro 推送的主 Sub2 连接和自动补货选定的监控组，通常按分组实际账号数量判断；若开启“禁补时段立即启用兜底调度”，仅完全禁补时段优先开启；允许卡台补货的时段及其余时间按空组判断。与补货总开关、观察模式独立；登录、开通、授权期间仍为空组就继续兜底。关闭此开关、取消选择或更换连接后，原账号调度会收尾关闭。</p>
    <div class="fields">
     <label>兜底 Sub2 地址<input v-model.trim="form.url" type="url" placeholder="https://sub2.example.com" :required="form.enabled" @change="resetConnection"></label>
     <label>管理员邮箱<input v-model.trim="form.email" type="email" autocomplete="off" :required="form.enabled" @change="resetConnection"></label>

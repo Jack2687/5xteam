@@ -703,12 +703,20 @@ func (s *Server) validateEJHAutomation(v model.ProSettings) error {
 func (s *Server) ensureEJHCard(ctx context.Context, admissionChecks ...func() error) (gptpay.Card, error) {
 	s.ejh.mu.Lock()
 	defer s.ejh.mu.Unlock()
+	pro, _, _, e := s.store.ProSettings()
+	if e != nil {
+		return gptpay.Card{}, e
+	}
+	pro, strict, e := s.restockCardSettings(ctx, pro)
+	if e != nil {
+		return gptpay.Card{}, e
+	}
 	cards, _, e := s.store.GPTPayCards(10000, 0, true)
 	if e != nil {
 		return gptpay.Card{}, e
 	}
 	for _, card := range cards {
-		if card.Source != "nexovcc" && card.CardType != "nexovcc" {
+		if store.RestockCardMatches(card, "ejh", strict) {
 			return card, nil
 		}
 	}
@@ -731,10 +739,6 @@ func (s *Server) ensureEJHCard(ctx context.Context, admissionChecks ...func() er
 				return gptpay.Card{}, fmt.Errorf("EJH 卡尾号 %s 的账号 %s：%s（订单 %s）；请在开通订单中核实原订单及移出情况，暂停自动补卡", card.Last4, occupant.Email, reason, occupant.OrderID)
 			}
 		}
-	}
-	pro, _, _, e := s.store.ProSettings()
-	if e != nil {
-		return gptpay.Card{}, e
 	}
 	if !pro.EJHAutoOpen {
 		return gptpay.Card{}, fmt.Errorf("无可用银行卡；EJH 自动补卡未启用")

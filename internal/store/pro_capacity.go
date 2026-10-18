@@ -224,6 +224,15 @@ func (s *Store) ReserveProCard(email, cardID string, enforceMaximum bool, restoc
 	if err = json.Unmarshal([]byte(raw), &card); err != nil {
 		return err
 	}
+	if owner != "" {
+		task, e := restockDispatchTask(tx, owner)
+		if e != nil {
+			return e
+		}
+		if !RestockCardMatches(card, task.CardProvider, task.StrictCardProvider) {
+			return errors.New("银行卡不属于本次补货指定卡台")
+		}
+	}
 	plain, err := s.decrypt(sealed)
 	if err != nil {
 		return err
