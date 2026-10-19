@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { cardFunding, cardReturnCounts, reconciliation } from '../src/nexovcc-reconciliation.js'
+import { cardBalanceDisplay, cardFunding, cardReturnCounts, reconciliation } from '../src/nexovcc-reconciliation.js'
 const now=Date.parse('2026-10-19T12:00:00+08:00'),at=new Date(now).toISOString()
 const raw=JSON.parse(readFileSync(new URL('../../internal/nexovcc/testdata/finance.json',import.meta.url),'utf8'))
 const data={finance:{at,
@@ -34,6 +34,7 @@ assert.equal(check(closure).gap,100)
 assert.equal(check(closure).closurePending,100)
 assert.equal(check(closure).unexplained,0)
 assert.equal(cardFunding(closure,closure.cards[0]).difference,null)
+assert.deepEqual(cardBalanceDisplay(closure,closure.cards[0]),{amount:'—',note:'余款待退回'})
 closure.operations[0].status='succeeded'
 assert.equal(check(closure).state,'pending') // local success alone doesn't prove receipt
 closure.finance.funds.push({kind:3002,serial_no:'fixture-card-1',currency:'USD',amount:'1.00'})
@@ -43,6 +44,16 @@ assert.equal(check(closure).closurePending,0)
 assert.equal(check(closure).state,'balanced')
 assert.equal(cardFunding(closure,closure.cards[0]).difference,5)
 assert.equal(cardFunding(closure,closure.cards[0]).withdrawn,11895)
+assert.deepEqual(cardBalanceDisplay(closure,closure.cards[0]),{amount:'0.00',note:'余款已退回'})
+assert.equal(closure.cards[0].card.balance,'1.00') // preserve the historical final balance
+assert.deepEqual(cardBalanceDisplay(data,data.cards[0]),{amount:'119.95',note:''})
+const unverifiedClose=structuredClone(closure);unverifiedClose.groups[0].valid=false
+assert.deepEqual(cardBalanceDisplay(unverifiedClose,unverifiedClose.cards[0]),{amount:'—',note:'余款待核实'})
+for(const action of ['withdraw_all','withdraw_cancel']){
+ const moving=structuredClone(data);moving.operations=[{card_id:'c1',action,status:'processing'}]
+ assert.equal(check(moving).state,'stale')
+ assert.equal(cardFunding(moving,moving.cards[0]).waiting,true)
+}
 
 const external=structuredClone(data)
 external.finance.funds.push({kind:1001,currency:'USD',amount:'-100.00'})
@@ -72,5 +83,17 @@ pending.finance.funds=pending.finance.funds.filter(f=>f.kind!==2003)
 pending.balance.amount='374.46';pending.cards[0].card.balance='27.67'
 assert.equal(check(pending).gap,0)
 assert.equal(check(pending).totals.pending,9233)
+// Three-card production regression: one closed/refunded, one reversed with
+// a 0.23 FX remainder, one new 92.33 authorization still awaiting a refund.
+const latest=structuredClone(closure)
+latest.balance.amount='251.81';latest.balance.frozen='92.56'
+latest.cards.push(...['two','three'].map((id,i)=>({card:{id,serial_no:id,status:'1',balance:i?'27.67':'119.77',balance_at:at,synced_at:at}})))
+latest.finance.funds.push(...['two','three'].flatMap(serial=>[{kind:3001,serial_no:serial,currency:'USD',amount:'-120.00'},{kind:3003,serial_no:serial,currency:'USD',amount:'-0.50'},{kind:2007,serial_no:serial,currency:'USD',amount:'-0.30'}]),{kind:2003,serial_no:'two',currency:'USD',amount:'-0.50'})
+latest.groups.push({id:'g2',serial_no:'two',valid:true,fully_returned:true,payment:'92.33',returned:'92.10',difference:'0.23',cost:'1.03',fees:'0.80'}, {id:'g3',serial_no:'three',valid:true,fully_returned:false,payment:'92.33',returned:'0.00',difference:'92.33',cost:'0.30',fees:'0.30'})
+assert.equal(check(latest).totals.cost,868)
+assert.equal(check(latest).assets,49158)
+assert.equal(check(latest).totals.pending,9233)
+assert.equal(check(latest).gap,0)
+assert.equal(check(latest).state,'balanced')
 assert.deepEqual(cardReturnCounts([{state:'unopened'},{state:'opened'},{state:'waiting'},{state:'waiting'},{state:'returned'},{state:'invalid'}]),{unopened:1,opened:1,waiting:2,returned:1})
 console.log('Passed: funding, additional deposits, withdrawals, pending/final closure returns, pending payments, external withdrawals, missing/stale/partial data, unexplained differences and account states')

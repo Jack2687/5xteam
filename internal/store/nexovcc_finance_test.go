@@ -147,3 +147,34 @@ func TestNexovccAutomaticReturnsAndAmbiguousMatching(t *testing.T) {
 		})
 	}
 }
+
+func TestNexovccResidualSettlementPreservesReturnedAccount(t *testing.T) {
+	s := transferStore(t)
+	c := nexStoreCard(t, s)
+	transferSource(t, s, "settlement@example.com")
+	o := transferOrder("settlement@example.com", "settlement-order", "success")
+	o.Order.CardID = c.ID
+	o.Order.CreatedAt = time.Now().Add(-time.Hour)
+	if err := s.CreateGPTPayOrder(o.Order, o.Snapshot); err != nil {
+		t.Fatal(err)
+	}
+	f := nexovcc.Finance{At: time.Now(), Trades: []nexovcc.Trade{
+		{ID: "paid", Serial: c.Serial, Authorization: "auth", Currency: "USD", Amount: "92.33", MerchantAmount: "5794.64", MerchantCurrency: "PHP", Status: "PENDING", At: o.Order.CreatedAt.Add(time.Minute)},
+		{ID: "return", Serial: c.Serial, Authorization: "auth", Currency: "USD", Amount: "92.28", MerchantAmount: "5794.64", MerchantCurrency: "PHP", Status: "REVERSED", At: o.Order.CreatedAt.Add(10 * time.Minute)},
+	}}
+	if err := s.SaveNexovccFinance(f); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.NexovccCases()
+	if err != nil || len(before) != 1 || before[0].Match == nil || before[0].State != "returned" {
+		t.Fatal(before, err)
+	}
+	f.Trades = append(f.Trades, nexovcc.Trade{ID: "settlement", Serial: c.Serial, Authorization: "auth", Currency: "USD", Amount: "0.05", MerchantAmount: "0.05", MerchantCurrency: "USD", Status: "COMPLETE", At: o.Order.CreatedAt.Add(30 * time.Minute)})
+	if err = s.SaveNexovccFinance(f); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.NexovccCases()
+	if err != nil || len(after) != 1 || after[0].Match == nil || after[0].State != "returned" || after[0].Match.Group.ID != before[0].Match.Group.ID || after[0].Match.Group.Payment != "92.33" || after[0].Match.Group.Cost != "0.05" {
+		t.Fatal(after, err)
+	}
+}

@@ -429,48 +429,102 @@ func (s *Store) BeginNexovccOperation(op nexovcc.Operation, restockIDs ...string
 		if pending > 0 {
 			return fmt.Errorf("卡片仍有开通预留或未决付款，请先核实")
 		}
+		if op.CapacityRecycle {
+			var unpaid int
+			if e = tx.QueryRow(`SELECT count(*) FROM pro_card_usage u WHERE u.card_key=? AND u.status='success' AND NOT EXISTS(SELECT 1 FROM nexovcc_case_matches m WHERE m.order_id=u.order_id AND m.returned=1)`, key.String).Scan(&unpaid); e != nil {
+				return e
+			}
+			if unpaid > 0 {
+				return fmt.Errorf("在线卡数回收须等待全部付款实际回款，人工状态不能替代退款流水")
+			}
+		}
 		if (op.Action == "withdraw" || op.Action == "withdraw_all" || op.Action == "cancel" || op.Action == "withdraw_cancel") && n > 0 {
 			return fmt.Errorf("仍有未确认回款的账号，暂不能提现或销卡")
 		}
 	}
-	if op.Automatic {
-		var raw string
-		if e = tx.QueryRow(`SELECT profile FROM pro_settings WHERE id=1`).Scan(&raw); e != nil {
+	if op.Action == "open" {
+		var limit, count int
+		if e = tx.QueryRow(`SELECT COALESCE((SELECT json_extract(profile,'$.max_online_cards') FROM nexovcc_settings WHERE id=1),0)`).Scan(&limit); e != nil {
 			return e
 		}
-		cfg := model.DefaultProSettings()
-		if e = json.Unmarshal([]byte(raw), &cfg); e != nil {
-			return e
-		}
-		provider := cfg.AutoCardProvider()
-		if len(restockIDs) > 0 && restockIDs[0] != "" {
-			task, err := restockDispatchTask(tx, restockIDs[0])
-			if err != nil {
-				return err
+		if limit > 0 {
+			if e = tx.QueryRow(`SELECT count(*) FROM nexovcc_cards WHERE coalesce(json_extract(profile,'$.status'),'')<>'4'`).Scan(&count); e != nil {
+				return e
 			}
-			provider = task.CardProvider
-		}
-		if !cfg.NexovccAutoOpen || provider != "nexovcc" {
-			return fmt.Errorf("环球自动补卡已关闭或切换")
-		}
-		var count int
-		var amount int64
-		day := op.CreatedAt.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
-		if e = tx.QueryRow(`SELECT count(*),coalesce(sum(CAST(round(CAST(json_extract(profile,'$.amount') AS REAL)*100) AS INTEGER)),0) FROM nexovcc_operations WHERE json_extract(profile,'$.automatic')=1 AND status<>'failed' AND date(json_extract(profile,'$.created_at'),'+8 hours')=?`, day).Scan(&count, &amount); e != nil {
-			return e
-		}
-		cap, ce := nexovcc.Cents(cfg.NexovccDailyAmountLimit)
-		add, ae := nexovcc.Cents(op.Amount)
-		if ce != nil || ae != nil || count >= cfg.NexovccDailyOpenLimit || amount+add > cap {
-			return fmt.Errorf("环球自动开卡已达每日数量或金额预算")
+			if count >= limit {
+				return fmt.Errorf("环球在线卡数已达上限，须先完成旧卡销卡")
+			}
 		}
 	}
+	if e = validateNexovccAutomaticOpen(tx, op, restockIDs...); e != nil {
+		return e
+	}
+
 	_, e = tx.Exec(`INSERT INTO nexovcc_operations VALUES(?,?,?,?)`, op.ID, scope, mustJSON(op), op.Status)
 	if e != nil {
 		return fmt.Errorf("存在相同请求或待核实操作，请先查看环球操作记录")
 	}
 	return tx.Commit()
 }
+
+func validateNexovccAutomaticOpen(tx *sql.Tx, op nexovcc.Operation, restockIDs ...string) error {
+	if !op.Automatic {
+		return nil
+	}
+	var e error
+	var raw string
+	if e = tx.QueryRow(`SELECT profile FROM pro_settings WHERE id=1`).Scan(&raw); e != nil {
+		return e
+	}
+	cfg := model.DefaultProSettings()
+	if e = json.Unmarshal([]byte(raw), &cfg); e != nil {
+		return e
+	}
+	provider := cfg.AutoCardProvider()
+	if len(restockIDs) > 0 && restockIDs[0] != "" {
+		task, err := restockDispatchTask(tx, restockIDs[0])
+		if err != nil {
+			return err
+		}
+		provider = task.CardProvider
+	}
+	if !cfg.NexovccAutoOpen || provider != "nexovcc" {
+		return fmt.Errorf("环球自动补卡已关闭或切换")
+	}
+	var count int
+	var amount int64
+	day := op.CreatedAt.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
+	if e = tx.QueryRow(`SELECT count(*),coalesce(sum(CAST(round(CAST(json_extract(profile,'$.amount') AS REAL)*100) AS INTEGER)),0) FROM nexovcc_operations WHERE json_extract(profile,'$.automatic')=1 AND status<>'failed' AND date(json_extract(profile,'$.created_at'),'+8 hours')=?`, day).Scan(&count, &amount); e != nil {
+		return e
+	}
+	cap, ce := nexovcc.Cents(cfg.NexovccDailyAmountLimit)
+	add, ae := nexovcc.Cents(op.Amount)
+	if ce != nil || ae != nil || count >= cfg.NexovccDailyOpenLimit || amount+add > cap {
+		return fmt.Errorf("环球自动开卡已达每日数量或金额预算")
+	}
+	return nil
+}
+
+// Check the opening budget before closing an old card to make room. The final
+// insertion repeats these checks under the admission transaction.
+func (s *Store) CheckNexovccOpen(op nexovcc.Operation, restockIDs ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, e := s.db.Begin()
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	var pending int
+	if e = tx.QueryRow(`SELECT count(*) FROM nexovcc_operations WHERE scope='open' AND status NOT IN ('succeeded','failed')`).Scan(&pending); e != nil {
+		return e
+	}
+	if pending > 0 {
+		return fmt.Errorf("存在未完成环球开卡，请先核实原操作")
+	}
+	return validateNexovccAutomaticOpen(tx, op, restockIDs...)
+}
+
 func (s *Store) SaveNexovccOperation(op nexovcc.Operation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

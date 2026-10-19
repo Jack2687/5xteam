@@ -99,6 +99,7 @@ func (s *Server) actionNexovccLocked(ctx context.Context, in nexovccInput) (nexo
 		return op, err
 	}
 	op = nexovcc.Operation{ID: in.RequestID, Action: in.Action, CardID: card.ID, Serial: card.Serial, Amount: in.Amount, Remark: in.Remark, Status: "submitted", BeforeBalance: card.Balance, BeforeAccountBalance: balance.Amount, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	op.CapacityRecycle = in.CapacityRecycle
 	if nexovccClosing(in.Action) {
 		op.Step = "ready"
 		if in.Action == "withdraw_cancel" {

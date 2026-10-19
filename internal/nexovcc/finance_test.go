@@ -150,3 +150,51 @@ func TestFinancePaginationDoesNotSilentlyTruncate(t *testing.T) {
 		})
 	}
 }
+
+func TestFinanceResidualSettlementAfterReversal(t *testing.T) {
+	for _, order := range [][]int{{0, 1, 2}, {2, 0, 1}, {1, 2, 0}, {2, 1, 0}, {0, 2, 1}, {1, 0, 2}} {
+		f := fixtureFinance(t)
+		g := Groups(f)[0]
+		settlement := Trade{ID: "residual", Serial: g.Serial, Authorization: g.Authorization, Currency: "USD", Amount: "0.05", MerchantAmount: "0.05", MerchantCurrency: "USD", Status: "COMPLETE", At: g.ReturnedAt.Add(time.Hour)}
+		rows := append(f.Trades, settlement)
+		f.Trades = []Trade{rows[order[0]], rows[order[1]], rows[order[2]]}
+		got := Groups(f)[0]
+		if !got.Valid || !got.FullyReturned || !got.Settled || got.ID != g.ID || got.Payment != "92.33" || got.Returned != "92.28" || got.Difference != "0.05" || got.Cost != "0.85" || got.MerchantCurrency != "PHP" {
+			t.Fatalf("row order %v changed accounting: %+v", order, got)
+		}
+	}
+}
+
+func TestFinanceResidualSettlementRequiresEvidence(t *testing.T) {
+	for _, mode := range []string{"amount mismatch", "early settlement", "partial merchant return"} {
+		t.Run(mode, func(t *testing.T) {
+			f := fixtureFinance(t)
+			g := Groups(f)[0]
+			r := Trade{ID: "unverified", Serial: g.Serial, Authorization: g.Authorization, Currency: "USD", Amount: "0.05", MerchantAmount: "0.05", MerchantCurrency: "USD", Status: "COMPLETE", At: g.ReturnedAt.Add(time.Hour)}
+			switch mode {
+			case "amount mismatch":
+				r.Amount = "0.04"
+			case "early settlement":
+				r.At = g.At
+			case "partial merchant return":
+				f.Trades[0].MerchantAmount = "100.00"
+			}
+			f.Trades = append(f.Trades, r)
+			got := Groups(f)[0]
+			if got.Valid || got.FullyReturned || got.Cost != "0.80" {
+				t.Fatalf("invalid settlement fabricated a return or negative cost: %+v", got)
+			}
+		})
+	}
+}
+
+func TestFinanceRegularSettlementThenRefund(t *testing.T) {
+	f := fixtureFinance(t)
+	g := Groups(f)[0]
+	f.Trades[0].Amount, f.Trades[0].MerchantAmount = "40.00", "2500.00"
+	f.Trades = append(f.Trades, Trade{ID: "normal-settlement", Serial: g.Serial, Authorization: g.Authorization, Currency: "USD", Amount: "92.35", MerchantAmount: "5794.64", MerchantCurrency: "PHP", Status: "COMPLETE", At: g.At.Add(time.Minute)})
+	got := Groups(f)[0]
+	if !got.Valid || got.FullyReturned || !got.Settled || got.Payment != "92.35" || got.Difference != "52.35" || got.Cost != "53.15" {
+		t.Fatalf("ordinary settlement/refund changed: %+v", got)
+	}
+}

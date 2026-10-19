@@ -1,8 +1,9 @@
-import { cents, financeTotals } from './nexovcc-finance.js'
+import { cents, money, financeTotals } from './nexovcc-finance.js'
 
 const hasAmount = v => v !== null && v !== undefined && String(v).trim() !== '' && Number.isFinite(Number(v))
 const timestamp = v => v && !String(v).startsWith('0001') ? Date.parse(v) : NaN
 const pending = op => !['succeeded', 'failed'].includes(op.status)
+const moneyActions = ['open', 'deposit', 'withdraw', 'withdraw_all', 'withdraw_cancel', 'cancel']
 const sum = (rows, fn) => rows.reduce((total, row) => total + fn(row), 0)
 
 export function cardFunding(data, row) {
@@ -18,7 +19,7 @@ export function cardFunding(data, row) {
  const returned = sum(closure, f => cents(f.amount))
  const ready = !!data.finance?.at && Number.isFinite(timestamp(data.finance.at)) && initial.length > 0 && valid
  const closed = row.card.status === '4'
- const waiting = (data.operations || []).some(op => (op.card_id === row.card.id || op.serial_no === serial) && ['withdraw', 'cancel', 'deposit', 'open'].includes(op.action) && pending(op))
+ const waiting = (data.operations || []).some(op => (op.card_id === row.card.id || op.serial_no === serial) && moneyActions.includes(op.action) && pending(op))
  const totals = financeTotals(data, serial)
  // Active/closing cards still belong to card assets. Only a closed card's
  // uncredited residual can explain a missing transfer, never a new expense.
@@ -28,6 +29,15 @@ export function cardFunding(data, row) {
   difference:settled ? funded - withdrawn - returned : null, additions:additions.length,
   closurePending, closed, waiting,
   note:!ready ? '入金流水缺失或币种待核实' : waiting ? '资金划转处理中，差额待核实' : !closed ? '销卡结算后显示差额' : closurePending > 0 ? '销卡退回待核实，不计成本' : '差额＝累计额度－提现－销卡退回'}
+}
+
+export function cardBalanceDisplay(data, row) {
+ if (row.card.status !== '4') return {amount:hasAmount(row.card.balance)?money(cents(row.card.balance)):'—',note:''}
+ const funding = cardFunding(data,row)
+ // The final balance endpoint no longer exists after deletion. Its cached
+ // pre-deletion balance is historical, never the card's current balance.
+ if (funding.closurePending === 0) return {amount:'0.00',note:'余款已退回'}
+ return {amount:'—',note:funding.closurePending > 0?'余款待退回':'余款待核实'}
 }
 
 export function cardReturnCounts(cases) {
@@ -60,7 +70,7 @@ export function reconciliation(data, now = Date.now(), freshnessSeconds = 120) {
  const maxAge = Math.max(120, freshnessSeconds) * 1000
  const stale = times.some(t => !Number.isFinite(t) || now - t > maxAge || t - now > 300000)
  if (stale) reasons.push('余额或流水较旧，请同步全部')
- const moving = (data.operations || []).some(op => ['open', 'deposit', 'withdraw', 'cancel'].includes(op.action) && pending(op))
+ const moving = (data.operations || []).some(op => moneyActions.includes(op.action) && pending(op))
  if (moving) reasons.push('有资金操作处理中')
  const unexplained = gap === null ? null : gap - closurePending
  const state = gap === null ? 'unknown' : reasons.length ? 'stale' : closurePending > 0 ? 'pending' : Math.abs(gap) <= 100 ? 'balanced' : 'difference'

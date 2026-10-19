@@ -319,6 +319,7 @@ func Groups(f Finance) []TradeGroup {
 		var paid, returned, settled, merchantPaid, merchantReturned, fees int64
 		payments := 0
 		completeCount := 0
+		var completedAt time.Time
 		fullReturnEvidence := true
 		for _, r := range rows {
 			g.TradeIDs = append(g.TradeIDs, r.ID)
@@ -353,6 +354,7 @@ func Groups(f Finance) []TradeGroup {
 			case "COMPLETE":
 				settled += n
 				completeCount++
+				completedAt = r.At
 				g.Settled = true
 				if g.At.IsZero() {
 					g.At = r.At
@@ -365,7 +367,21 @@ func Groups(f Finance) []TradeGroup {
 				g.Problem = "未知交易状态"
 			}
 		}
-		if completeCount == 1 {
+		// After a full merchant reversal the supplier can settle only the
+		// remaining FX difference (92.33 paid, 92.28 returned, 0.05 COMPLETE).
+		// That is the same loss already represented by paid-returned, not a
+		// replacement 0.05 payment and not an additional expense.
+		returnCurrencyMatches := true
+		for _, r := range rows {
+			if (r.Status == "REVERSED" || r.Status == "REFUNDED") && r.MerchantCurrency != g.MerchantCurrency {
+				returnCurrencyMatches = false
+			}
+		}
+		residualSettlement := payments == 1 && completeCount == 1 && returned > 0 && settled > 0 &&
+			paid == returned+settled && fullReturnEvidence && returnCurrencyMatches &&
+			merchantPaid > 0 && merchantPaid == merchantReturned &&
+			!g.ReturnedAt.IsZero() && !completedAt.Before(g.ReturnedAt)
+		if completeCount == 1 && !residualSettlement {
 			paid = settled
 			for _, r := range rows {
 				if r.Status == "COMPLETE" {
@@ -411,6 +427,10 @@ func Groups(f Finance) []TradeGroup {
 				}
 			}
 		}
+		if g.Settled && returned > settled && !g.FullyReturned {
+			g.Valid = false
+			g.Problem = "退款超过结算金额"
+		}
 		cost := fees
 		if !g.Valid {
 			g.FullyReturned = false
@@ -419,10 +439,6 @@ func Groups(f Finance) []TradeGroup {
 			cost += paid - returned
 		} else if g.Valid && g.Settled {
 			cost += settled - returned
-		}
-		if g.Settled && returned > settled && !g.FullyReturned {
-			g.Valid = false
-			g.Problem = "退款超过结算金额"
 		}
 		g.Payment, g.Returned, g.Difference, g.Fees, g.Cost = Money(paid), Money(returned), SignedMoney(paid-returned), SignedMoney(fees), SignedMoney(cost)
 		if !g.Valid {

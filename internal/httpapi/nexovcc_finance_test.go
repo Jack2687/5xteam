@@ -68,3 +68,65 @@ func TestNexovccTransferRequiresUniqueSameCardCredit(t *testing.T) {
 		})
 	}
 }
+
+func TestNexovccSyncRefreshesImportedCardBalance(t *testing.T) {
+	for _, mode := range []string{"active", "frozen", "deleted", "balance failure"} {
+		t.Run(mode, func(t *testing.T) {
+			s, _ := nexFixtureServer(t)
+			ctx := context.Background()
+			opened, err := s.openNexovccLocked(ctx, "nex-balance-open1", "template", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old, _ := s.store.NexovccCard(opened.CardID)
+			old.Balance, old.BalanceAt = "120.00", time.Now().Add(-time.Hour)
+			if _, err = s.store.SaveNexovccCard(old, nil); err != nil {
+				t.Fatal(err)
+			}
+			base := s.nexovcc.transport
+			calls := 0
+			s.nexovcc.transport = func(ctx context.Context, r nexovcc.Request) (nexovcc.Response, error) {
+				switch r.Path {
+				case "/api/card/findUserCardList":
+					status := "1"
+					if mode == "frozen" {
+						status = "2"
+					}
+					if mode == "deleted" {
+						status = "4"
+					}
+					return nexReply(map[string]any{"list": []any{map[string]any{"serial_no": old.Serial, "status": status}}}), nil
+				case "/api/card/getUserCardDetail":
+					t.Fatal("already imported card should not fetch card secrets during balance sync")
+				case "/api/card/getUserCardBalance":
+					calls++
+					if mode == "balance failure" {
+						return nexovcc.Response{Status: 502}, nil
+					}
+					return nexReply(map[string]any{"balance": "27.67"}), nil
+				}
+				return base(ctx, r)
+			}
+			s.nexovcc.client = nil
+			err = s.syncNexovccLocked(ctx)
+			if (err != nil) != (mode == "balance failure") {
+				t.Fatal(err)
+			}
+			got, err := s.store.NexovccCard(old.ID)
+			if err != nil || !got.Imported {
+				t.Fatal(got, err)
+			}
+			if mode == "deleted" {
+				if calls != 0 || got.Status != "4" {
+					t.Fatal("queried deleted card", got, calls)
+				}
+			} else if mode == "balance failure" {
+				if calls != 1 || got.Error == "" || got.Balance != old.Balance || !got.BalanceAt.Equal(old.BalanceAt) {
+					t.Fatal("failed refresh hid stale data", got, calls)
+				}
+			} else if calls != 1 || got.Balance != "27.67" || !got.BalanceAt.After(old.BalanceAt) || got.Error != "" {
+				t.Fatal("balance not refreshed", got, calls)
+			}
+		})
+	}
+}

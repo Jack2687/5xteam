@@ -26,6 +26,8 @@ type Settings struct {
 	DefaultMaxAccounts  int        `json:"default_max_accounts"`
 	SingleActiveAccount bool       `json:"single_active_account"`
 	PageRefreshSeconds  int        `json:"page_refresh_seconds"`
+	MaxOnlineCards      int        `json:"max_online_cards"`
+	AutoRecycleAt       int        `json:"auto_recycle_at"`
 	Templates           []Template `json:"templates"`
 }
 type Template struct {
@@ -83,6 +85,7 @@ type Operation struct {
 	Error                string    `json:"error"`
 	Evidence             string    `json:"evidence"`
 	Automatic            bool      `json:"automatic"`
+	CapacityRecycle      bool      `json:"capacity_recycle,omitempty"`
 	BeforeBalance        string    `json:"before_balance"`
 	BeforeAccountBalance string    `json:"before_account_balance"`
 	CreatedAt            time.Time `json:"created_at"`
@@ -120,6 +123,12 @@ func Cents(s string) (int64, error) {
 }
 func Money(n int64) string { return fmt.Sprintf("%d.%02d", n/100, n%100) }
 func Normalize(s Settings) (Settings, error) {
+	if s.AutoRecycleAt < 0 || s.AutoRecycleAt > 10000 {
+		return s, fmt.Errorf("自动回收触发卡数须为 0～10000，0 表示关闭")
+	}
+	if s.MaxOnlineCards < 0 || s.MaxOnlineCards > 10000 {
+		return s, fmt.Errorf("最多在线卡数须为 0～10000，0 表示不限制")
+	}
 	if s.DefaultMaxAccounts < 1 || s.DefaultMaxAccounts > 10000 {
 		return s, fmt.Errorf("每卡开通上限须为 1～10000")
 	}

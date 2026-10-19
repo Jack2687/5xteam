@@ -84,17 +84,18 @@ type nexovccRuntime struct {
 	monitorCancel context.CancelFunc
 }
 type nexovccInput struct {
-	Action     string   `json:"action"`
-	RequestID  string   `json:"request_id"`
-	CardID     string   `json:"card_id"`
-	CardIDs    []string `json:"card_ids,omitempty"`
-	TemplateID string   `json:"template_id"`
-	Amount     string   `json:"amount"`
-	Remark     string   `json:"remark"`
-	Confirm    bool     `json:"confirm"`
-	Serial     string   `json:"serial_no"`
-	Outcome    string   `json:"outcome"`
-	Evidence   string   `json:"evidence"`
+	CapacityRecycle bool     `json:"-"`
+	Action          string   `json:"action"`
+	RequestID       string   `json:"request_id"`
+	CardID          string   `json:"card_id"`
+	CardIDs         []string `json:"card_ids,omitempty"`
+	TemplateID      string   `json:"template_id"`
+	Amount          string   `json:"amount"`
+	Remark          string   `json:"remark"`
+	Confirm         bool     `json:"confirm"`
+	Serial          string   `json:"serial_no"`
+	Outcome         string   `json:"outcome"`
+	Evidence        string   `json:"evidence"`
 }
 
 func (s *Server) nexovccRoutes(m *http.ServeMux) {
@@ -388,6 +389,17 @@ func (s *Server) syncNexovccLocked(ctx context.Context) error {
 			if _, e = s.refreshNexovccLocked(ctx, card.ID, ""); e != nil {
 				failures++
 			}
+		} else {
+			// The list often omits balance. Imported cards still need the live
+			// balance endpoint after payments/refunds; an import is not a refresh.
+			updated, balanceErr := s.readNexovccCardBalanceLocked(ctx, card)
+			if balanceErr != nil {
+				updated.Error = "余额同步失败：" + balanceErr.Error()
+				failures++
+			}
+			if _, e = s.store.SaveNexovccCard(updated, nil); e != nil {
+				return e
+			}
 		}
 	}
 	if e = s.syncNexovccFinanceLocked(ctx); e != nil {
@@ -408,7 +420,7 @@ func (s *Server) syncNexovccLocked(ctx context.Context) error {
 		}
 	}
 	if failures > 0 {
-		return fmt.Errorf("卡列表已同步，%d 张卡资料未导入，请在卡片操作中刷新", failures)
+		return fmt.Errorf("%d 张卡余额或资料同步失败，请稍后重新同步", failures)
 	}
 	return nil
 }
@@ -482,7 +494,27 @@ func (s *Server) refreshNexovccLocked(ctx context.Context, id, serial string) (n
 		_, _ = s.store.SaveNexovccCard(card, nil)
 		return card, pe
 	}
-	data, e = c.Do(ctx, "/api/card/getUserCardBalance", map[string]any{"serial_no": serial})
+	card, e = s.readNexovccCardBalanceLocked(ctx, card)
+	if e != nil {
+		return card, e
+	}
+	saved, e := s.store.SaveNexovccCard(card, &private)
+	if e != nil {
+		card.Error = "卡密校验未通过，未加入可用卡"
+		_, _ = s.store.SaveNexovccCard(card, nil)
+	}
+	return saved, e
+}
+
+func (s *Server) readNexovccCardBalanceLocked(ctx context.Context, card nexovcc.Card) (nexovcc.Card, error) {
+	if card.Status == "4" {
+		return card, nil
+	}
+	c, _, e := s.nexovccClientLocked()
+	if e != nil {
+		return card, e
+	}
+	data, e := c.Do(ctx, "/api/card/getUserCardBalance", map[string]any{"serial_no": card.Serial})
 	if e != nil {
 		return card, e
 	}
@@ -496,14 +528,9 @@ func (s *Server) refreshNexovccLocked(ctx context.Context, id, serial string) (n
 	}
 	card.Balance = nexovcc.Money(n)
 	card.BalanceAt = time.Now()
-	saved, e := s.store.SaveNexovccCard(card, &private)
-	if e != nil {
-		card.Error = "卡密校验未通过，未加入可用卡"
-		_, _ = s.store.SaveNexovccCard(card, nil)
-	}
-	return saved, e
+	return card, nil
 }
-func (s *Server) openNexovccLocked(ctx context.Context, id, templateID string, automatic bool) (nexovcc.Operation, error) {
+func (s *Server) openNexovccLocked(ctx context.Context, id, templateID string, automatic bool, checks ...func() error) (nexovcc.Operation, error) {
 	var op nexovcc.Operation
 	if !nexovcc.ValidRequestID(id) {
 		return op, fmt.Errorf("开卡请求编号无效")
@@ -549,6 +576,23 @@ func (s *Server) openNexovccLocked(ctx context.Context, id, templateID string, a
 	if !valid {
 		return op, fmt.Errorf("请先同步环球产品，选择可用产品后开卡")
 	}
+	taskID, _ := ctx.Value(proRestockContextKey{}).(string)
+	if cfg.MaxOnlineCards > 0 || cfg.AutoRecycleAt > 0 {
+		if e = s.store.CheckNexovccOpen(nexovcc.Operation{Action: "open", Amount: t.Amount, Automatic: automatic, CreatedAt: time.Now()}, taskID); e != nil {
+			return op, e
+		}
+		if e = s.ensureNexovccOnlineSlotLocked(ctx, id, cfg, checks...); e != nil {
+			return op, e
+		}
+	}
+	for _, check := range checks {
+		if e = check(); e != nil {
+			return op, e
+		}
+	}
+	if e = ctx.Err(); e != nil {
+		return op, e
+	}
 	balance, e := client.Balance(ctx)
 	if e != nil {
 		return op, e
@@ -562,7 +606,6 @@ func (s *Server) openNexovccLocked(ctx context.Context, id, templateID string, a
 		return op, fmt.Errorf("环球账户余额不足以覆盖开卡金额和预留费用")
 	}
 	op = nexovcc.Operation{ID: id, Action: "open", TemplateID: templateID, ProductID: t.ProductID, Amount: t.Amount, Remark: id, Status: "submitted", Automatic: automatic, BeforeAccountBalance: balance.Amount, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	taskID, _ := ctx.Value(proRestockContextKey{}).(string)
 	if e = s.store.BeginNexovccOperation(op, taskID); e != nil {
 		return op, e
 	}
@@ -878,7 +921,7 @@ func (s *Server) ensureNexovccCard(ctx context.Context, checks ...func() error) 
 	}
 	sum := sha256.Sum256([]byte(time.Now().String()))
 	id := fmt.Sprintf("nex-%x", sum[:12])
-	op, e := s.openNexovccLocked(ctx, id, p.NexovccTemplateID, true)
+	op, e := s.openNexovccLocked(ctx, id, p.NexovccTemplateID, true, checks...)
 	if e != nil {
 		return gptpay.Card{}, e
 	}

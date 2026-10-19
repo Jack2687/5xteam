@@ -575,6 +575,13 @@ func (s *Server) dispatchProRestock(ctx context.Context, c restock.Config, p mod
 			if json.Unmarshal(w.Body.Bytes(), &reply) == nil && reply.Error != "" {
 				t.Message = reply.Error
 			}
+			if w.Header().Get("X-Pro-Card-Wait") == "nexovcc" {
+				// No payment/opening was submitted. Keep this same account and
+				// batch reservation; a future scan resumes after the refund.
+				t.Status, t.SubmittedAt = "reserved", nil
+				_ = s.store.SaveProRestockTask(t)
+				return
+			}
 			_ = s.store.SaveProRestockTask(t)
 		}
 	}

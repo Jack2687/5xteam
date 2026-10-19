@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -178,7 +179,7 @@ func (s *Server) startNexovccMonitor() {
 			if err != nil {
 				continue
 			}
-			pending := false
+			pending := cfg.AutoRecycleAt > 0
 			for _, c := range cases {
 				if c.PaymentStatus == "success" && (c.State != "returned" || c.Match == nil) {
 					pending = true
@@ -194,7 +195,11 @@ func (s *Server) startNexovccMonitor() {
 					pending = true
 				}
 			}
-			if !pending || !s.nexovcc.mu.TryLock() {
+			if !pending || !s.proCardAdmissionMu.TryLock() {
+				continue
+			}
+			if !s.nexovcc.mu.TryLock() {
+				s.proCardAdmissionMu.Unlock()
 				continue
 			}
 			last = time.Now()
@@ -202,12 +207,16 @@ func (s *Server) startNexovccMonitor() {
 			if s.nexovcc.closed {
 				s.nexovcc.jobMu.Unlock()
 				s.nexovcc.mu.Unlock()
+				s.proCardAdmissionMu.Unlock()
 				return
 			}
 			s.nexovcc.job = nexovccJob{ID: randomRegistrationID(), Status: "running", Message: "自动同步回款与资金流水", Total: 4}
 			s.nexovcc.jobMu.Unlock()
 			workCtx, stop := context.WithTimeout(ctx, 10*time.Minute)
 			err = s.syncNexovccLocked(workCtx)
+			if err == nil {
+				err = s.autoRecycleNexovccLocked(workCtx)
+			}
 			stop()
 			s.nexovcc.jobMu.Lock()
 			s.nexovcc.job.Status = "completed"
@@ -216,9 +225,14 @@ func (s *Server) startNexovccMonitor() {
 			if err != nil {
 				s.nexovcc.job.Status = "failed"
 				s.nexovcc.job.Message = fmt.Sprint(err)
+				var waiting *nexovccCapacityWaitError
+				if errors.As(err, &waiting) {
+					s.nexovcc.job.Status = "completed"
+				}
 			}
 			s.nexovcc.jobMu.Unlock()
 			s.nexovcc.mu.Unlock()
+			s.proCardAdmissionMu.Unlock()
 		}
 	}()
 }

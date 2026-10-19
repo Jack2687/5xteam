@@ -345,6 +345,13 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			lock.Unlock()
+			var waiting *nexovccCapacityWaitError
+			if errors.As(err, &waiting) {
+				w.Header().Set("X-Pro-Card-Wait", "nexovcc")
+				s.auditProEvent(p, "login", "waiting", "pro_auto", err.Error(), nil)
+				writeAPI(w, 409, nil, err.Error())
+				return
+			}
 			s.auditProEvent(p, "login", "failed", "pro_auto", "全自动准备银行卡失败："+err.Error(), nil)
 			writeAPI(w, 409, nil, err.Error())
 			return
