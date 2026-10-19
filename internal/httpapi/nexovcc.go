@@ -882,6 +882,12 @@ func (s *Server) ensureNexovccCard(ctx context.Context, checks ...func() error) 
 	if e != nil {
 		return gptpay.Card{}, e
 	}
+	if op.Status == "import_pending" && op.Serial != "" {
+		op, e = s.waitNexovccImportLocked(ctx, op, 45*time.Second, 3*time.Second, checks...)
+		if e != nil {
+			return gptpay.Card{}, e
+		}
+	}
 	if op.Status != "succeeded" {
 		return gptpay.Card{}, fmt.Errorf("环球自动开卡待核实：%s", op.Error)
 	}
@@ -890,6 +896,44 @@ func (s *Server) ensureNexovccCard(ctx context.Context, checks ...func() error) 
 		e = fmt.Errorf("环球卡已开出但暂不可用，请核实原卡")
 	}
 	return card, e
+}
+
+// Issuance can return a serial before the card number/expiry are ready. Keep
+// this startup attached to that exact operation; only repeat reads, never issue
+// another card. The caller holds the issuer and Pro allocation locks.
+func (s *Server) waitNexovccImportLocked(parent context.Context, op nexovcc.Operation, timeout, interval time.Duration, checks ...func() error) (nexovcc.Operation, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	for op.Action == "open" && op.Status == "import_pending" && op.Serial != "" {
+		for _, check := range checks {
+			if err := check(); err != nil {
+				return op, err
+			}
+		}
+		s.proAutoMu.Lock()
+		closed := s.proAutoClosed
+		s.proAutoMu.Unlock()
+		if closed {
+			return op, fmt.Errorf("服务正在停止，已保留原开卡记录")
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return op, fmt.Errorf("环球卡已开出，等待卡片资料未完成；原卡已保留，请同步后重试当前账号：%s", op.Error)
+		case <-timer.C:
+		}
+		for _, check := range checks {
+			if err := check(); err != nil {
+				return op, err
+			}
+		}
+		op = s.verifyNexovccOperationLocked(ctx, op)
+		if err := s.store.SaveNexovccOperation(op); err != nil {
+			return op, err
+		}
+	}
+	return op, nil
 }
 func (s *Server) notifyNexovccOpened(op nexovcc.Operation) {
 	result := map[string]string{"succeeded": "成功", "failed": "失败", "unknown": "结果待核实", "import_pending": "已开出，待同步"}[op.Status]

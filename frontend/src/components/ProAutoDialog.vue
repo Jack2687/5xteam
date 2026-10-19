@@ -10,6 +10,7 @@ import CardOccupancy from './CardOccupancy.vue'
 const props=defineProps({defaultPageSize:{type:Number,default:10}})
 const emit=defineEmits(['updated'])
 const email=ref(''),opened=ref(false),busy=ref(false),error=ref(''),state=ref({}),settings=ref({}),cards=ref([]),cardID=ref(''),page=ref(1),pageSize=ref(props.defaultPageSize || 10),total=ref(0)
+const preparingCard=ref(false)
 const autoCardEnabled=computed(()=>settings.value.card_provider==='nexovcc'?settings.value.nexovcc_auto_open:settings.value.ejh_auto_open)
 const autoCardLabel=computed(()=>settings.value.card_provider==='nexovcc'?'环球':'EJH')
 const active=computed(()=>['running','waiting_quota'].includes(state.value.status))
@@ -41,13 +42,13 @@ async function occupancyResolved(){
 let timer,generation=0
 const path=()=>`/api/pro-accounts/${encodeURIComponent(email.value)}/auto-pro`
 async function loadCards(){const data=await api(`/api/gptpay/cards?page=${page.value}&page_size=${pageSize.value}&enabled=true&card_provider=configured`);cards.value=data.items||[];total.value=data.total||0;cardID.value=autoCardEnabled.value?'':cards.value[0]?.id||''}
-async function open(account){if(busy.value)return;clearTimeout(timer);generation++;blockedCards.value=[];occupancyMessage.value='';email.value=account.email;state.value=account.pro_auto||{};error.value='';opened.value=true;busy.value=true;page.value=1;pageSize.value=props.defaultPageSize || 10;try{const [config,current,pro]=await Promise.all([api('/api/gptpay/settings'),api(path()),api('/api/pro-settings'),loadCards()]);settings.value={...config,quota_used_threshold:pro.quota_used_threshold,ejh_auto_open:pro.ejh_auto_open,nexovcc_auto_open:pro.nexovcc_auto_open,card_provider:pro.card_provider};cardID.value=autoCardEnabled.value?'':cards.value[0]?.id||'';state.value=current||{}}catch(e){error.value=e.message}finally{busy.value=false;schedule()}}
+async function open(account){if(busy.value)return;clearTimeout(timer);generation++;blockedCards.value=[];occupancyMessage.value='';email.value=account.email;state.value=account.pro_auto||{};error.value='';opened.value=true;busy.value=true;page.value=1;pageSize.value=props.defaultPageSize || 10;try{const [config,current,pro]=await Promise.all([api('/api/gptpay/settings'),api(path()),api('/api/pro-settings'),loadCards()]);settings.value={...config,quota_used_threshold:pro.quota_used_threshold,ejh_auto_open:pro.ejh_auto_open,nexovcc_auto_open:pro.nexovcc_auto_open,card_provider:pro.card_provider};cardID.value=autoCardEnabled.value?'':cards.value[0]?.id||'';state.value=current||{}}catch(e){error.value=e.message}finally{preparingCard.value=false;busy.value=false;schedule()}}
 function close(){if(busy.value)return;opened.value=false;generation++;clearTimeout(timer)}
 function schedule(){clearTimeout(timer);if(opened.value&&(active.value||manualRunning.value))timer=setTimeout(refresh,state.value.status==='running'||manualRunning.value?1500:5000)}
 async function refresh(){const gen=generation;try{const value=await api(path());if(gen!==generation)return;state.value=value;emit('updated')}catch(e){if(gen===generation)error.value=e.message}finally{if(gen===generation)schedule()}}
-async function start(){if(busy.value)return;busy.value=true;error.value='';try{const p=await api(path(),{method:'POST',body:{provider:settings.value.provider,card_id:cardID.value,plan_code:settings.value.plan_code,country:settings.value.country,credit_quantity:settings.value.credit_quantity||0}});state.value=p.pro_auto;emit('updated')}catch(e){error.value=e.message}finally{busy.value=false;schedule()}}
-async function retryStep(){if(busy.value)return;busy.value=true;error.value='';try{const p=await api(path(),{method:'POST',body:{retry_current:true,provider:settings.value.provider,card_id:cardID.value,plan_code:settings.value.plan_code,country:settings.value.country,credit_quantity:settings.value.credit_quantity||0}});state.value=p.pro_auto;emit('updated')}catch(e){error.value=e.message;await refresh()}finally{busy.value=false;schedule()}}
-async function stop(){if(busy.value||!window.confirm('停止后续自动步骤？已提交的 GPTPay 订单仍会继续处理，请查询订单结果。'))return;busy.value=true;try{await api(path()+'/stop',{method:'POST',body:{}});await refresh()}catch(e){error.value=e.message}finally{busy.value=false;schedule()}}
+async function start(){if(busy.value)return;busy.value=true;preparingCard.value=canStart.value;error.value='';try{const p=await api(path(),{method:'POST',body:{provider:settings.value.provider,card_id:cardID.value,plan_code:settings.value.plan_code,country:settings.value.country,credit_quantity:settings.value.credit_quantity||0}});state.value=p.pro_auto;emit('updated')}catch(e){error.value=e.message}finally{preparingCard.value=false;busy.value=false;schedule()}}
+async function retryStep(){if(busy.value)return;busy.value=true;preparingCard.value=restartable.value;error.value='';try{const p=await api(path(),{method:'POST',body:{retry_current:true,provider:settings.value.provider,card_id:cardID.value,plan_code:settings.value.plan_code,country:settings.value.country,credit_quantity:settings.value.credit_quantity||0}});state.value=p.pro_auto;emit('updated')}catch(e){error.value=e.message;await refresh()}finally{preparingCard.value=false;busy.value=false;schedule()}}
+async function stop(){if(busy.value||!window.confirm('停止后续自动步骤？已提交的 GPTPay 订单仍会继续处理，请查询订单结果。'))return;busy.value=true;try{await api(path()+'/stop',{method:'POST',body:{}});await refresh()}catch(e){error.value=e.message}finally{preparingCard.value=false;busy.value=false;schedule()}}
 async function changePage(v){if(busy.value)return;page.value=v;busy.value=true;try{await loadCards()}catch(e){error.value=e.message}finally{busy.value=false}}
 function changeSize(v){pageSize.value=v;changePage(1)}
 onBeforeUnmount(()=>{generation++;opened.value=false;clearTimeout(timer)})
@@ -56,6 +57,7 @@ defineExpose({open})
 <template><Teleport to="body"><div v-if="opened" class="modal-backdrop" @click.self="close"><section class="modal pro-auto-dialog" role="dialog" aria-modal="true" aria-label="全自动开通 Pro">
 <div class="modal-heading"><h2>全自动开通 Pro</h2><button class="icon-button" title="关闭全自动窗口" :disabled="busy" @click="close"><X :size="17" /></button></div>
 <p>{{ email }}</p><ProAutoStages :state="state.stage_progress || state" />
+<p v-if="preparingCard&&autoCardEnabled" role="status">正在准备银行卡；新卡资料同步完成后会继续全自动，请稍候。</p>
 <p v-if="state.retry_attempts" role="status">原账号重试：第 {{ state.retry_attempts }} 次<span v-if="state.status==='running'&&state.retry_at"> · 下次执行：{{ formatTime(state.retry_at) }}</span></p>
 <p v-if="state.status==='completed'" class="done">全自动流程已完成，已移出空间。</p>
 <p v-if="state.status==='waiting_quota'">等待额度达到 {{ state.quota_used_threshold }}%，下次检测：{{ formatTime(state.next_check_at) }}</p>

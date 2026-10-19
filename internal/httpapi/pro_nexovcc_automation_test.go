@@ -26,6 +26,17 @@ func TestProConfiguredNexovccAllAutomaticEntrypoints(t *testing.T) {
 					payments.Add(1)
 					fmt.Fprint(w, `{"code":0,"data":{"id":"configured-paid","status":"success"}}`)
 				})
+
+				var detailReads atomic.Int32
+				if autoOpen {
+					transport := s.nexovcc.transport
+					s.nexovcc.transport = func(ctx context.Context, r nexovcc.Request) (nexovcc.Response, error) {
+						if r.Path == "/api/card/getUserCardDetail" && detailReads.Add(1) == 1 {
+							return nexReply(map[string]any{"serial_no": r.Body["serial_no"], "status": "1", "expire_at_str": ""}), nil
+						}
+						return transport(ctx, r)
+					}
+				}
 				p, _, _, _ := s.store.ProSettings()
 				p.CardProvider, p.NexovccAutoOpen = "nexovcc", autoOpen
 				p.MaxUnmerged, p.Concurrency = 1, 1

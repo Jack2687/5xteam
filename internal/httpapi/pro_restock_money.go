@@ -126,7 +126,7 @@ func (s *Server) refreshRestockMoney(c restock.Config, p model.ProSettings, pass
 			if closed {
 				break
 			}
-			if a.Ready && !a.Shared {
+			if a.Ready {
 				jobs <- a
 			}
 		}

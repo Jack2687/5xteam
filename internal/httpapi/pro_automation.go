@@ -345,6 +345,7 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			lock.Unlock()
+			s.auditProEvent(p, "login", "failed", "pro_auto", "全自动准备银行卡失败："+err.Error(), nil)
 			writeAPI(w, 409, nil, err.Error())
 			return
 		}

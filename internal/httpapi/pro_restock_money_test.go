@@ -134,7 +134,7 @@ func TestRestockMoneyRefreshCadenceFailureAndRecovery(t *testing.T) {
 	s.proRestock.quotaBinding = restockBinding(p)
 	s.proRestock.quotaNext = now.Add(time.Hour)
 	previous := &restock.AccountMoney{At: now.Add(-time.Minute), Day: now.UTC().Format("2006-01-02"), Samples: []restock.MoneySample{{At: now.Add(-3 * time.Minute), Cost: 10}, {At: now.Add(-2 * time.Minute), Cost: 20}, {At: now.Add(-time.Minute), Cost: 30}}}
-	snap := restock.Snapshot{Binding: restockBinding(p), Accounts: []restock.Account{{ID: 1, Ready: true, Money: previous}, {ID: 2, Ready: false}, {ID: 3, Ready: true, Shared: true}}}
+	snap := restock.Snapshot{Binding: restockBinding(p), Accounts: []restock.Account{{ID: 1, Ready: true, Shared: true, Money: previous}, {ID: 2, Ready: false}}}
 	c := restock.DefaultConfig()
 	c.MoneyWindowMinutes = 1
 	s.refreshRestockMoney(c, p, "fixture", snap)
