@@ -231,6 +231,12 @@ func (p MailAccountProfile) ProStages() ProStageDisplay {
 		}
 		v.Steps["deactivate"] = status
 		delete(v.Manual, "deactivate")
+		if d.ConfirmationSource == "manual" && d.ConfirmedAt != nil {
+			if v.Manual == nil {
+				v.Manual = map[string]bool{}
+			}
+			v.Manual["deactivate"] = true
+		}
 		if d.Error != "" {
 			v.Errors["deactivate"] = d.Error
 		}

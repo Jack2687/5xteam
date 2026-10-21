@@ -203,6 +203,15 @@ func (s *Store) DeleteProOAuthSession(id string) error {
 }
 
 func (s *Store) UpdateProAccount(email string, mutate func(*model.MailAccountProfile)) (model.MailAccountProfile, error) {
+	return s.updateProAccount(email, time.Time{}, mutate)
+}
+
+// Check the UI version under the same lock as the business-state transaction.
+func (s *Store) UpdateProAccountIfUnchanged(email string, expected time.Time, mutate func(*model.MailAccountProfile)) (model.MailAccountProfile, error) {
+	return s.updateProAccount(email, expected, mutate)
+}
+
+func (s *Store) updateProAccount(email string, expected time.Time, mutate func(*model.MailAccountProfile)) (model.MailAccountProfile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	email = strings.ToLower(strings.TrimSpace(email))
@@ -216,6 +225,9 @@ func (s *Store) UpdateProAccount(email string, mutate func(*model.MailAccountPro
 	}
 	if normalizeMailManagementScope(p.ManagementScope) != "pro" {
 		return p, errors.New("账号不在 Pro 管理中")
+	}
+	if !expected.IsZero() && !p.UpdatedAt.Equal(expected) {
+		return p, ErrProStageConflict
 	}
 	wasConfirmed := p.TransferStatus == "completed" && p.ProMergeConfirmedSource != ""
 	wasRemoved := p.RemoveStatus == "completed" || p.RemoveStatus == "team_removed"

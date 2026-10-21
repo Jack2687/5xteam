@@ -8,20 +8,22 @@ import (
 // Deactivation is independent of the four Team membership steps. A queued
 // response confirms acceptance only, never deletion or a financial refund.
 type ProDeactivation struct {
-	Status      string            `json:"status"`
-	Stage       string            `json:"stage"`
-	Steps       map[string]string `json:"steps"`
-	Error       string            `json:"error,omitempty"`
-	Message     string            `json:"message,omitempty"`
-	StartedAt   time.Time         `json:"started_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	SubmittedAt *time.Time        `json:"submitted_at,omitempty"`
-	AcceptedAt  *time.Time        `json:"accepted_at,omitempty"`
-	ConfirmedAt *time.Time        `json:"confirmed_at,omitempty"`
-	CheckedAt   *time.Time        `json:"checked_at,omitempty"`
-	NextCheckAt *time.Time        `json:"next_check_at,omitempty"`
-	AccountID   string            `json:"account_id,omitempty"`
-	UserID      string            `json:"user_id,omitempty"`
+	Status             string                      `json:"status"`
+	Stage              string                      `json:"stage"`
+	Steps              map[string]string           `json:"steps"`
+	Manual             map[string]ProStageOverride `json:"manual,omitempty"`
+	ConfirmationSource string                      `json:"confirmation_source,omitempty"`
+	Error              string                      `json:"error,omitempty"`
+	Message            string                      `json:"message,omitempty"`
+	StartedAt          time.Time                   `json:"started_at"`
+	UpdatedAt          time.Time                   `json:"updated_at"`
+	SubmittedAt        *time.Time                  `json:"submitted_at,omitempty"`
+	AcceptedAt         *time.Time                  `json:"accepted_at,omitempty"`
+	ConfirmedAt        *time.Time                  `json:"confirmed_at,omitempty"`
+	CheckedAt          *time.Time                  `json:"checked_at,omitempty"`
+	NextCheckAt        *time.Time                  `json:"next_check_at,omitempty"`
+	AccountID          string                      `json:"account_id,omitempty"`
+	UserID             string                      `json:"user_id,omitempty"`
 }
 
 func (s ProSettings) ValidateDisposition() error {

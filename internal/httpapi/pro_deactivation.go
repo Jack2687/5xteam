@@ -69,6 +69,7 @@ func (s *Server) deletionUpdate(email, stage, status, message string) (model.Mai
 		}
 		d.Stage, d.Status, d.Message, d.UpdatedAt = stage, status, message, now
 		d.Steps[stage] = status
+		delete(d.Manual, stage)
 		d.Error, p.ProLastError = "", ""
 	})
 }
@@ -234,6 +235,7 @@ func (s *Server) performProDeactivation(ctx context.Context, email string) (out 
 					d := p.ProDeactivation
 					d.AccountID, d.UserID = str("account_id"), str("user_id")
 					d.Steps["credentials"] = "completed"
+					delete(d.Manual, "credentials")
 				})
 			case "stage":
 				_, err = s.deletionUpdate(email, "verify", "running", "执行删除专用验证")
@@ -246,6 +248,8 @@ func (s *Server) performProDeactivation(ctx context.Context, email string) (out 
 					now := time.Now()
 					d.SubmittedAt = &now
 					d.Steps["verify"] = "completed"
+					delete(d.Manual, "verify")
+					delete(d.Manual, "submit")
 					d.Stage, d.Status, d.Steps["submit"] = "submit", "running", "running"
 				})
 			case "accepted":
@@ -255,6 +259,8 @@ func (s *Server) performProDeactivation(ctx context.Context, email string) (out 
 					d.AcceptedAt = &now
 					d.Status, d.Stage, d.Message = "queued", "confirm", "删除请求已受理，等待上游确认"
 					d.Steps["submit"], d.Steps["confirm"] = "completed", "waiting"
+					delete(d.Manual, "submit")
+					delete(d.Manual, "confirm")
 					if p.DailyMergeMatches() {
 						p.ProDailyMerge.Completed = true
 					}
@@ -314,6 +320,8 @@ func (s *Server) performProDeactivation(ctx context.Context, email string) (out 
 				d.Message, d.Error = message, ""
 				if state == "confirmed" && d.SubmittedAt != nil {
 					d.ConfirmedAt = &now
+					d.ConfirmationSource = "upstream"
+					delete(d.Manual, "confirm")
 					d.Status, d.Stage, d.Steps["confirm"] = "completed", "confirm", "completed"
 					// Explicit state for the original account recovers a lost POST response.
 					if d.AcceptedAt == nil {
