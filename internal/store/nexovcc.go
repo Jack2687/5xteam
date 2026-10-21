@@ -197,6 +197,7 @@ func (s *Store) SaveNexovccCard(c nexovcc.Card, private *nexovcc.PrivateCard) (n
 			return c, e
 		}
 		c.Imported = old.Imported
+		c.NormalPending, c.NormalPendingAt = old.NormalPending, old.NormalPendingAt
 		c.Control, c.ControlAt = old.Control, old.ControlAt
 		// A transition back to ACTIVE after observing a non-active snapshot
 		// also recognizes an unfreeze performed on the supplier's website.
@@ -218,6 +219,9 @@ func (s *Store) SaveNexovccCard(c nexovcc.Card, private *nexovcc.PrivateCard) (n
 		if c.Balance == "" {
 			c.Balance, c.BalanceAt = old.Balance, old.BalanceAt
 		}
+	}
+	if c.Status == "4" {
+		c.NormalPending, c.NormalPendingAt = false, nil
 	}
 	// An import time is not falsely presented as the supplier's opening time.
 	key := oldKey.String

@@ -60,21 +60,23 @@ type Balance struct {
 	At     time.Time `json:"at"`
 }
 type Card struct {
-	ID        string    `json:"id"`
-	Serial    string    `json:"serial_no"`
-	Status    string    `json:"status"`
-	Last4     string    `json:"last4"`
-	BIN       string    `json:"bin"`
-	ProductID string    `json:"product_id"`
-	Remark    string    `json:"remark"`
-	Balance   string    `json:"balance"`
-	BalanceAt time.Time `json:"balance_at"`
-	CreatedAt time.Time `json:"created_at"`
-	SyncedAt  time.Time `json:"synced_at"`
-	Imported  bool      `json:"imported"`
-	Error     string    `json:"error"`
-	Control   string    `json:"control,omitempty"`
-	ControlAt time.Time `json:"control_at,omitempty"`
+	ID              string     `json:"id"`
+	Serial          string     `json:"serial_no"`
+	Status          string     `json:"status"`
+	Last4           string     `json:"last4"`
+	BIN             string     `json:"bin"`
+	ProductID       string     `json:"product_id"`
+	Remark          string     `json:"remark"`
+	Balance         string     `json:"balance"`
+	BalanceAt       time.Time  `json:"balance_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	SyncedAt        time.Time  `json:"synced_at"`
+	Imported        bool       `json:"imported"`
+	Error           string     `json:"error"`
+	Control         string     `json:"control,omitempty"`
+	ControlAt       time.Time  `json:"control_at,omitempty"`
+	NormalPending   bool       `json:"normal_pending,omitempty"`
+	NormalPendingAt *time.Time `json:"normal_pending_at,omitempty"`
 }
 type PrivateCard struct {
 	Number      string

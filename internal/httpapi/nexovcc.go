@@ -118,6 +118,7 @@ func (s *Server) nexovccRoutes(m *http.ServeMux) {
 		writeAPI(w, 200, job, "")
 	})
 	m.HandleFunc("POST /api/nexovcc/cards/{id}/private", s.nexovccPrivate)
+	m.HandleFunc("PUT /api/nexovcc/cards/{id}/category", s.nexovccCardCategory)
 	m.HandleFunc("PUT /api/nexovcc/cases/{id}", s.nexovccCaseState)
 	m.HandleFunc("DELETE /api/nexovcc/cases/unopened", s.deleteNexovccUnopenedCases)
 	m.HandleFunc("PUT /api/nexovcc/cases/{id}/match", s.nexovccCaseMatch)
