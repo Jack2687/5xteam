@@ -131,6 +131,63 @@ func TestProDeletionUnknownRestartAndRecovery(t *testing.T) {
 	}
 }
 
+func TestProDeletionIndependentIntervalAndConfirmedStopsChecks(t *testing.T) {
+	f := newProGroupFixture(t)
+	enableDeletion(t, f.proExecutionFixture)
+	var posts atomic.Int32
+	mode := "pending"
+	protocol := deletionProtocolFixture(t, &posts, &mode)
+	calls := 0
+	f.s.proDeleteHooks = &proDeactivationHooks{Protocol: func(ctx context.Context, input map[string]any, call func(string, map[string]any) (any, error)) (map[string]any, error) {
+		calls++
+		// Simulate editing the interval while an upstream request is running.
+		cfg, _, _, _ := f.s.store.ProSettings()
+		cfg.DeletionCheckIntervalSeconds, cfg.QuotaCheckIntervalSeconds = 37, 900
+		if _, err := f.s.store.SaveProSettings(cfg, "", ""); err != nil {
+			t.Fatal(err)
+		}
+		return protocol(ctx, input, call)
+	}}
+	before := time.Now()
+	p, err := f.s.performProDeactivation(t.Context(), f.email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next := p.ProDeactivation.NextCheckAt; next == nil || next.Before(before.Add(37*time.Second)) || next.After(time.Now().Add(37*time.Second)) {
+		t.Fatal("independent interval not applied", next)
+	}
+	mode = "confirmed"
+	p, err = f.s.performProDeactivation(t.Context(), f.email)
+	if err != nil || !p.DeletionConfirmed() || p.ProDeactivation.NextCheckAt != nil {
+		t.Fatal("confirmation did not stop timer", err)
+	}
+	confirmedCalls := calls
+	// Downstream cleanup may retry, but must never re-query or resubmit deletion.
+	if _, err = f.s.store.UpdateProAccount(f.email, func(p *model.MailAccountProfile) { p.ProPostMergeGroups.Status = "failed" }); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.groups = []int64{1}
+	f.mu.Unlock()
+	f.fail.Store(true)
+	p, err = f.s.performProDeactivation(t.Context(), f.email)
+	if err == nil || calls != confirmedCalls || !p.DeletionConfirmed() || p.ProDeactivation.NextCheckAt == nil {
+		t.Fatalf("cleanup retry: protocol calls=%d want=%d err=%v state=%+v", calls, confirmedCalls, err, p.ProDeactivation)
+	}
+	f.fail.Store(false)
+	p, err = f.s.performProDeactivation(t.Context(), f.email)
+	if err != nil || calls != confirmedCalls || p.ProDeactivation.NextCheckAt != nil || p.ProPostMergeGroupsPending() {
+		t.Fatal("cleanup completion did not clear clock", err)
+	}
+	if _, err = f.s.performProDeactivation(t.Context(), f.email); err != nil || calls != confirmedCalls || posts.Load() != 1 {
+		t.Fatal("finished deletion called upstream again")
+	}
+	due, err := f.s.store.DueProDeactivations(time.Now().Add(24 * time.Hour))
+	if err != nil || len(due) != 0 {
+		t.Fatal("completed deletion scheduled again", err)
+	}
+}
+
 func TestProDeletionLoginDoesNotReplaceOAuth(t *testing.T) {
 	f := newProExecutionFixture(t)
 	enableDeletion(t, f)

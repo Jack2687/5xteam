@@ -139,6 +139,12 @@ func (s *Server) performProDeactivation(ctx context.Context, email string) (out 
 			_, cleanupErr := s.finishProDownstream(ctx, latest)
 			runErr = errors.Join(runErr, cleanupErr)
 		}
+		// A settings save may happen while the upstream request is in flight.
+		// Use the latest interval when scheduling the next continuation.
+		interval := settings.DeletionCheckInterval()
+		if current, _, _, settingsErr := s.store.ProSettings(); settingsErr == nil {
+			interval = current.DeletionCheckInterval()
+		}
 		var saveErr error
 		out, saveErr = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
 			if p.ProDeactivation == nil {
@@ -165,8 +171,8 @@ func (s *Server) performProDeactivation(ctx context.Context, email string) (out 
 				}
 			}
 			d.NextCheckAt = nil
-			if d.SubmittedAt != nil && (d.ConfirmedAt == nil || p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending()) {
-				next := time.Now().Add(time.Duration(max(300, settings.QuotaCheckIntervalSeconds)) * time.Second)
+			if p.DeletionNeedsContinuation() {
+				next := time.Now().Add(interval)
 				d.NextCheckAt = &next
 			}
 		})

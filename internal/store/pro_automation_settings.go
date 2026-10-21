@@ -42,6 +42,8 @@ func (s *Store) SaveProAutomationSettings(input model.ProSettings, pay gptpay.Se
 			return v, pay, err
 		}
 	}
+	previousDeletionInterval := v.DeletionCheckInterval()
+	v.DeletionCheckIntervalSeconds = int(input.DeletionCheckInterval() / time.Second)
 	v.QuotaEnabled, v.AutoMergeEnabled = input.QuotaEnabled, input.AutoMergeEnabled
 	v.AutoDeleteEnabled = input.AutoDeleteEnabled
 	v.CardProvider = input.AutoCardProvider()
@@ -66,6 +68,11 @@ func (s *Store) SaveProAutomationSettings(input model.ProSettings, pay gptpay.Se
 	}
 	if err = s.saveGPTPaySettingsTx(tx, &pay, key); err != nil {
 		return v, pay, err
+	}
+	if v.DeletionCheckInterval() != previousDeletionInterval {
+		if err = rescheduleProDeactivationsTx(tx, v.DeletionCheckInterval()); err != nil {
+			return v, pay, err
+		}
 	}
 	if _, err = tx.Exec(`INSERT INTO pro_schedule_clock VALUES(1,?) ON CONFLICT(id) DO UPDATE SET next_at=excluded.next_at`, time.Now().Add(time.Duration(v.ScheduleIntervalSeconds)*time.Second).UTC().Format(time.RFC3339Nano)); err != nil {
 		return v, pay, err

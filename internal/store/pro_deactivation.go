@@ -2,6 +2,7 @@ package store
 
 import (
 	"chatgpt-space-merge/internal/model"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -47,7 +48,7 @@ func (s *Store) SaveProDeletionSession(email, session string) error {
 func (s *Store) DueProDeactivations(now time.Time) ([]model.MailAccountProfile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT profile FROM mail_accounts WHERE json_extract(profile,'$.management_scope')='pro' AND json_extract(profile,'$.pro_deactivation.submitted_at') IS NOT NULL AND COALESCE(json_extract(profile,'$.pro_workflow_running'),0)=0 AND COALESCE(json_extract(profile,'$.pro_auto.stop_requested'),0)=0 AND COALESCE(json_extract(profile,'$.pro_migration.paused'),0)=0 AND julianday(json_extract(profile,'$.pro_deactivation.next_check_at'))<=julianday(?) ORDER BY julianday(json_extract(profile,'$.pro_deactivation.next_check_at')) LIMIT 10`, now.UTC().Format(time.RFC3339Nano))
+	rows, err := s.db.Query(`SELECT profile FROM mail_accounts WHERE json_extract(profile,'$.management_scope')='pro' AND json_extract(profile,'$.pro_deactivation.submitted_at') IS NOT NULL AND COALESCE(json_extract(profile,'$.pro_workflow_running'),0)=0 AND COALESCE(json_extract(profile,'$.pro_auto.stop_requested'),0)=0 AND COALESCE(json_extract(profile,'$.pro_migration.paused'),0)=0 AND julianday(json_extract(profile,'$.pro_deactivation.next_check_at'))<=julianday(?) ORDER BY julianday(json_extract(profile,'$.pro_deactivation.next_check_at'))`, now.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +63,51 @@ func (s *Store) DueProDeactivations(now time.Time) ([]model.MailAccountProfile, 
 		if err = json.Unmarshal([]byte(raw), &p); err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		if p.DeletionNeedsContinuation() {
+			out = append(out, p)
+			// Apply the limit after completion filtering, so stale completed
+			// clocks cannot starve accounts that still need confirmation.
+			if len(out) == 10 {
+				break
+			}
+		}
 	}
 	return out, rows.Err()
+}
+
+// Apply an edited interval to existing waits without restarting stopped work
+// or changing a request already in flight. Configuration and clocks commit together.
+func rescheduleProDeactivationsTx(tx *sql.Tx, interval time.Duration) error {
+	rows, err := tx.Query(`SELECT email,profile FROM mail_accounts WHERE json_extract(profile,'$.management_scope')='pro' AND json_extract(profile,'$.pro_deactivation.submitted_at') IS NOT NULL AND COALESCE(json_extract(profile,'$.pro_workflow_running'),0)=0 AND COALESCE(json_extract(profile,'$.pro_auto.status'),'')<>'running'`)
+	if err != nil {
+		return err
+	}
+	type update struct{ email, profile string }
+	var updates []update
+	next := time.Now().Add(interval)
+	for rows.Next() {
+		var email, raw string
+		var p model.MailAccountProfile
+		if err = rows.Scan(&email, &raw); err != nil {
+			break
+		}
+		if err = json.Unmarshal([]byte(raw), &p); err != nil {
+			break
+		}
+		p.ProDeactivation.NextCheckAt = nil
+		if p.DeletionNeedsContinuation() {
+			p.ProDeactivation.NextCheckAt = &next
+		}
+		updates = append(updates, update{email, mustJSON(p)})
+	}
+	err = errors.Join(err, rows.Err(), rows.Close())
+	if err != nil {
+		return err
+	}
+	for _, u := range updates {
+		if _, err = tx.Exec("UPDATE mail_accounts SET profile=? WHERE email=?", u.profile, u.email); err != nil {
+			return err
+		}
+	}
+	return nil
 }

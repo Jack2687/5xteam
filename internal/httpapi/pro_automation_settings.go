@@ -26,12 +26,17 @@ func (s *Server) saveProAutomationSettings(w http.ResponseWriter, r *http.Reques
 	// still fails validation after decoding.
 	input.Automation.MergeConcurrency = current.MergeConcurrency
 	input.Automation.AutoDeleteEnabled = current.AutoDeleteEnabled
+	input.Automation.DeletionCheckIntervalSeconds = current.DeletionCheckIntervalSeconds
 	input.Automation.PurchaseScheduleEnabled, input.Automation.PurchaseWindows = current.PurchaseScheduleEnabled, current.PurchaseWindows
 	input.Automation.EJHPlanTemplates, input.Automation.NexovccPlanTemplates = current.EJHPlanTemplates, current.NexovccPlanTemplates
 	if err := decodeJSON(w, r, &input, 2<<20); err != nil {
 		return
 	}
 	v := input.Automation
+	if v.DeletionCheckIntervalSeconds < 1 || v.DeletionCheckIntervalSeconds > 86400 {
+		writeAPI(w, 400, nil, "删除结果核验间隔须为 1～86400 秒")
+		return
+	}
 	if err := v.ValidateDisposition(); err != nil {
 		writeAPI(w, 400, nil, err.Error())
 		return

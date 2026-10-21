@@ -672,6 +672,7 @@ func (s *Server) saveProSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.AutoDeleteEnabled, input.AutoMergeEnabled = current.AutoDeleteEnabled, current.AutoMergeEnabled
+	input.DeletionCheckIntervalSeconds = current.DeletionCheckIntervalSeconds
 	input.TargetAdminID, input.TargetSeatType = current.TargetAdminID, current.TargetSeatType
 	if input.AutoMergeEnabled && strings.TrimSpace(input.TargetAdminID) == "" {
 		writeAPI(w, 400, nil, "开启自动合并前请选择目标母号")

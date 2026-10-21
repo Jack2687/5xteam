@@ -16,10 +16,10 @@ const groups = computed(() => props.account.pro_post_merge_groups)
     <small v-if="state.accepted_at">提交成功：{{ formatTime(state.accepted_at) }}</small>
     <small v-else-if="state.submitted_at">提交请求：{{ formatTime(state.submitted_at) }}</small>
     <small v-if="state.confirmed_at">确认时间：{{ formatTime(state.confirmed_at) }}</small>
-    <small v-if="state.next_check_at">下次核验：{{ formatTime(state.next_check_at) }}</small>
+    <small v-if="state.next_check_at">{{ state.confirmed_at ? '下次后续处理' : '下次核验' }}：{{ formatTime(state.next_check_at) }}</small>
     <small v-if="state.error" class="danger-text">{{ state.error }}</small>
     <small v-if="groups">分组调整：{{ names[groups.status] || '待执行' }}<span v-if="groups.error" class="danger-text"> · {{ groups.error }}</span></small>
-    <button v-if="state.submitted_at && (state.error || groups && groups.status !== 'completed')" type="button" class="btn ghost compact" :disabled="disabled" @click="$emit('retry')">续跑核验及分组调整</button>
+    <button v-if="state.submitted_at && (state.error || groups && groups.status !== 'completed')" type="button" class="btn ghost compact" :disabled="disabled" @click="$emit('retry')">{{ state.confirmed_at ? '续跑分组调整' : '续跑核验及分组调整' }}</button>
   </div>
 </template>
 <style scoped>

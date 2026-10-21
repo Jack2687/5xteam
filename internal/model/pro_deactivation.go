@@ -25,10 +25,25 @@ type ProDeactivation struct {
 }
 
 func (s ProSettings) ValidateDisposition() error {
+	if s.DeletionCheckIntervalSeconds < 0 || s.DeletionCheckIntervalSeconds > 86400 {
+		return errors.New("删除结果核验间隔须为 1～86400 秒")
+	}
 	if s.AutoDeleteEnabled && s.AutoMergeEnabled {
 		return errors.New("自动删除账户与自动合并只能开启一个")
 	}
 	return nil
+}
+
+func (s ProSettings) DeletionCheckInterval() time.Duration {
+	seconds := s.DeletionCheckIntervalSeconds
+	if seconds < 1 || seconds > 86400 {
+		seconds = 300
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (p MailAccountProfile) DeletionNeedsContinuation() bool {
+	return p.DeletionSubmitted() && (!p.DeletionConfirmed() || p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending())
 }
 func (s ProSettings) Disposition() string {
 	if s.AutoDeleteEnabled {

@@ -36,6 +36,7 @@ func normalizeProSettings(v *model.ProSettings) {
 	if v.QuotaCheckIntervalSeconds < 10 {
 		v.QuotaCheckIntervalSeconds = 120
 	}
+	v.DeletionCheckIntervalSeconds = int(v.DeletionCheckInterval() / time.Second)
 	if v.QuotaUsedThreshold <= 0 || v.QuotaUsedThreshold > 100 || math.IsNaN(v.QuotaUsedThreshold) || math.IsInf(v.QuotaUsedThreshold, 0) {
 		v.QuotaUsedThreshold = 100
 	}
@@ -281,6 +282,16 @@ func (s *Store) UpdateProAccount(email string, mutate func(*model.MailAccountPro
 func (s *Store) RecoverProWorkflows() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	settings := model.DefaultProSettings()
+	var settingsRaw string
+	if err := s.db.QueryRow("SELECT profile FROM pro_settings WHERE id=1").Scan(&settingsRaw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if settingsRaw != "" {
+		if err := json.Unmarshal([]byte(settingsRaw), &settings); err != nil {
+			return err
+		}
+	}
 	rows, err := s.db.Query("SELECT email,profile FROM mail_accounts")
 	if err != nil {
 		return err
@@ -321,7 +332,7 @@ func (s *Store) RecoverProWorkflows() error {
 			d.UpdatedAt = time.Now()
 		}
 		if d := p.ProDeactivation; d != nil && d.SubmittedAt != nil && (!p.DeletionConfirmed() || p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending()) {
-			next := time.Now().Add(5 * time.Minute)
+			next := time.Now().Add(settings.DeletionCheckInterval())
 			d.NextCheckAt = &next
 		}
 		if groupsRunning {
