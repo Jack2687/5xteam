@@ -78,7 +78,18 @@ func (s *Server) autoWithdrawNexovccLocked(ctx context.Context) error {
 		if e != nil {
 			return e
 		}
-		if local.IssuerLocked || local.PendingAccounts > 0 || local.AccountLimit < 1 || local.OpenedAccounts < local.AccountLimit {
+		if (local.IssuerLocked && card.Error == "") || local.PendingAccounts > 0 || local.AccountLimit < 1 || local.OpenedAccounts < local.AccountLimit {
+			continue
+		}
+		// A previous read error may be repaired, but never touch a card whose money
+		// operation is still unresolved.
+		pendingOperation := false
+		for _, op := range ops {
+			if op.CardID == card.ID && !op.Terminal() {
+				pendingOperation = true
+			}
+		}
+		if pendingOperation {
 			continue
 		}
 		cycle, withdrawn := nexovcc.WithdrawFundingCycle(card, finance), false

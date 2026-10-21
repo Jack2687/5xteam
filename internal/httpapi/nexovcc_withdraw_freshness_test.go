@@ -10,7 +10,7 @@ import (
 )
 
 func TestNexovccAutoWithdrawRefreshesStaleCandidates(t *testing.T) {
-	for _, scenario := range []string{"refund arrived", "one dollar", "ledger failed", "balance failed", "refund absent", "pending category", "under limit", "unknown operation"} {
+	for _, scenario := range []string{"refund arrived", "prior balance error", "one dollar", "ledger failed", "balance failed", "refund absent", "pending category", "under limit", "unknown operation"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			s, _ := nexFixtureServer(t)
@@ -39,6 +39,12 @@ func TestNexovccAutoWithdrawRefreshesStaleCandidates(t *testing.T) {
 			if err = s.store.SaveNexovccFinance(finance); err != nil {
 				t.Fatal(err)
 			}
+			if scenario == "prior balance error" {
+				card.Error = "余额同步失败：HTTP 522"
+				if _, err = s.store.SaveNexovccCard(card, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if scenario == "under limit" {
 				cfg.DefaultMaxAccounts = 2
 				if _, err = s.store.SaveNexovccSettings(cfg, nexovcc.Credentials{}, false); err != nil {
@@ -58,7 +64,12 @@ func TestNexovccAutoWithdrawRefreshesStaleCandidates(t *testing.T) {
 			s.nexovcc.transport = func(ctx context.Context, r nexovcc.Request) (nexovcc.Response, error) {
 				reads++
 				switch r.Path {
-				case "/api/card/findUserCardList", "/api/card/getUserCardDetail", "/api/findLogRecharge", "/api/findLogReportCardDay", "/api/product/findUserProductList", "/api/card/lockUserCard", "/api/card/deleteUserCard":
+				case "/api/card/getUserCardDetail":
+					if scenario != "prior balance error" {
+						t.Fatal("unnecessary card details")
+					}
+					return base(ctx, r)
+				case "/api/card/findUserCardList", "/api/findLogRecharge", "/api/findLogReportCardDay", "/api/product/findUserProductList", "/api/card/lockUserCard", "/api/card/deleteUserCard":
 					t.Fatal("withdrawal expanded outside candidate", r.Path)
 				case "/api/card/getUserCardBalance":
 					if r.Body["serial_no"] != card.Serial {
@@ -106,7 +117,7 @@ func TestNexovccAutoWithdrawRefreshesStaleCandidates(t *testing.T) {
 				t.Fatal("unexpected error", err)
 			}
 			wantWrites := 0
-			if scenario == "refund arrived" || scenario == "pending category" {
+			if scenario == "refund arrived" || scenario == "pending category" || scenario == "prior balance error" {
 				wantWrites = 1
 			}
 			if writes != wantWrites {
