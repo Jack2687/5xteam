@@ -248,7 +248,7 @@ async function tradePurposeUpdated(group){
      <label>充值记录与每日汇总（秒）<input v-model.number="cfg.account_sync_seconds" type="number" min="60" max="86400" required/><small>主账户近期充值及平台每日统计</small></label>
      <label>产品 / BIN（秒）<input v-model.number="cfg.product_sync_seconds" type="number" min="60" max="86400" required/><small>开卡产品与可用卡段</small></label>
     </div>
-    <p class="note">自动提现使用上面的独立检查间隔，不必等待流水同步周期；只更新达到开通上限且无进行中付款、无未确认操作的候选卡，再按原有回款条件决定是否提现。最近已更新的数据直接复用，余额不超过 1U 不提现。</p>
+    <p class="note">自动提现使用上面的独立检查间隔，不必等待流水同步周期；仅检查“正常”分类中达到开通上限且无进行中付款、无未确认操作的卡，正常待定和已销卡不查询、不自动提现，再按原有回款条件决定是否提现。最近已更新的数据直接复用，余额不超过 1U 不提现。</p>
     <div class="sync-line" v-for="(name,key) in {balance:'主账户余额',cards:'卡片资料与余额',transactions:'卡片流水',account:'充值与每日汇总',products:'产品 / BIN'}" :key="key"><span>{{name}}</span><span>最近成功 {{at(data.sync?.parts?.[key]?.last_success_at)}}</span><span>下次 {{at(data.sync?.parts?.[key]?.next_refresh_at)}}</span><span v-if="data.sync?.parts?.[key]?.error" class="danger-text">{{data.sync.parts[key].error}}</span></div>
     <button class="btn primary" :disabled="saving||running">保存配置</button>
    </section>

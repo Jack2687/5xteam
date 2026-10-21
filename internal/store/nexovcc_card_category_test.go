@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,5 +57,29 @@ func TestNexovccCardCategorySurvivesSyncAndRestart(t *testing.T) {
 	}
 	if _, err = s.SetNexovccCardNormalPending(c.ID, true); !errors.Is(err, ErrNexovccClosedCategory) {
 		t.Fatal("closed card reclassified as normal", err)
+	}
+}
+
+func TestNexovccPendingCategoryBlocksAutomaticWithdrawalAdmission(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c := nexStoreCard(t, s)
+	if _, err = s.SetNexovccCardNormalPending(c.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	op := nexovcc.Operation{ID: "nex-pending-auto1", CardID: c.ID, Serial: c.Serial, Action: "withdraw_all", Amount: "9.00", AutoWithdraw: true, Status: "submitted", CreatedAt: time.Now()}
+	if err = s.BeginNexovccOperation(op); err == nil || !strings.Contains(err.Error(), "正常待定") {
+		t.Fatal("pending admitted", err)
+	}
+	ops, err := s.NexovccOperations()
+	if err != nil || len(ops) != 0 {
+		t.Fatal("failed admission persisted operation", ops, err)
+	}
+	op.ID, op.Action, op.AutoWithdraw = "nex-manual-freeze1", "freeze", false
+	if err = s.BeginNexovccOperation(op); err != nil {
+		t.Fatal("manual operation blocked", err)
 	}
 }

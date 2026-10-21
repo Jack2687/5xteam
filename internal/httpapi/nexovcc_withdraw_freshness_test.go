@@ -10,7 +10,7 @@ import (
 )
 
 func TestNexovccAutoWithdrawRefreshesStaleCandidates(t *testing.T) {
-	for _, scenario := range []string{"refund arrived", "prior balance error", "one dollar", "ledger failed", "balance failed", "refund absent", "pending category", "under limit", "unknown operation"} {
+	for _, scenario := range []string{"refund arrived", "prior balance error", "one dollar", "ledger failed", "balance failed", "refund absent", "pending category", "closed category", "reclassified during query", "under limit", "unknown operation"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			s, _ := nexFixtureServer(t)
@@ -45,6 +45,12 @@ func TestNexovccAutoWithdrawRefreshesStaleCandidates(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if scenario == "closed category" {
+				card.Status = "4"
+				if _, err = s.store.SaveNexovccCard(card, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if scenario == "under limit" {
 				cfg.DefaultMaxAccounts = 2
 				if _, err = s.store.SaveNexovccSettings(cfg, nexovcc.Credentials{}, false); err != nil {
@@ -72,6 +78,11 @@ func TestNexovccAutoWithdrawRefreshesStaleCandidates(t *testing.T) {
 				case "/api/card/findUserCardList", "/api/findLogRecharge", "/api/findLogReportCardDay", "/api/product/findUserProductList", "/api/card/lockUserCard", "/api/card/deleteUserCard":
 					t.Fatal("withdrawal expanded outside candidate", r.Path)
 				case "/api/card/getUserCardBalance":
+					if scenario == "reclassified during query" {
+						if _, err := s.store.SetNexovccCardNormalPending(card.ID, true); err != nil {
+							t.Fatal(err)
+						}
+					}
 					if r.Body["serial_no"] != card.Serial {
 						t.Fatal("wrong card", r.Body)
 					}
@@ -117,13 +128,13 @@ func TestNexovccAutoWithdrawRefreshesStaleCandidates(t *testing.T) {
 				t.Fatal("unexpected error", err)
 			}
 			wantWrites := 0
-			if scenario == "refund arrived" || scenario == "pending category" || scenario == "prior balance error" {
+			if scenario == "refund arrived" || scenario == "prior balance error" {
 				wantWrites = 1
 			}
 			if writes != wantWrites {
 				t.Fatal("withdrawals", writes, "wanted", wantWrites)
 			}
-			if scenario == "under limit" || scenario == "unknown operation" {
+			if scenario == "under limit" || scenario == "unknown operation" || scenario == "pending category" || scenario == "closed category" {
 				if reads != 0 {
 					t.Fatal("ineligible card contacted supplier", reads)
 				}

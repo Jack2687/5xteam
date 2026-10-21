@@ -39,7 +39,7 @@ func (s *Server) actionNexovccLocked(ctx context.Context, in nexovccInput) (nexo
 		// Automatic withdrawals select verified local card/finance records.
 		// Recheck the live spendable balance before transactional admission.
 		card, err = s.store.NexovccCard(in.CardID)
-		if err == nil && (!card.Imported || card.Status != "1" || card.Control == "frozen" || card.Error != "") {
+		if err == nil && (card.NormalPending || !card.Imported || card.Status != "1" || card.Control == "frozen" || card.Error != "") {
 			err = fmt.Errorf("自动提现卡片状态待更新，请等待下一轮同步")
 		}
 		if err == nil {

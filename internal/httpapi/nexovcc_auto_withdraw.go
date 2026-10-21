@@ -71,7 +71,7 @@ func (s *Server) autoWithdrawNexovccLocked(ctx context.Context) error {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		if card.Status != "1" || card.Control == "frozen" || !card.Imported || !nexovccCardUsed(card, cases, groups) {
+		if card.NormalPending || card.Status != "1" || card.Control == "frozen" || !card.Imported || !nexovccCardUsed(card, cases, groups) {
 			continue
 		}
 		local, _, e := s.store.GPTPayCard(card.ID)
@@ -101,8 +101,7 @@ func (s *Server) autoWithdrawNexovccLocked(ctx context.Context) error {
 		if withdrawn {
 			continue // Late refund rows cannot withdraw the same recovered funds again.
 		}
-		// Category is only a display label: scheduled withdrawals still obey the
-		// original eligibility rules, even for manually classified pending cards.
+		// Only the normal category participates in automatic withdrawals.
 		// A recent successful ordinary sync can supply this evidence too.
 		freshAfter := time.Now().Add(-time.Duration(max(cfg.AutoWithdrawIntervalSeconds, 30)) * time.Second)
 		s.nexovccProgress("自动提现检查 · 更新尾号 "+card.Last4+" 余额与流水", 0, 3)
@@ -113,7 +112,7 @@ func (s *Server) autoWithdrawNexovccLocked(ctx context.Context) error {
 			}
 		}
 		amount, e := nexovcc.Cents(card.Balance)
-		if e != nil || amount <= 100 || card.Status != "1" || card.Error != "" {
+		if e != nil || amount <= 100 || card.NormalPending || card.Status != "1" || card.Error != "" {
 			continue
 		}
 		at := finance.CardAt[card.Serial]

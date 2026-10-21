@@ -443,6 +443,9 @@ func (s *Store) BeginNexovccOperation(op nexovcc.Operation, admission ...Nexovcc
 		if c.Status == "4" {
 			return fmt.Errorf("环球卡片已销卡，不能重复操作")
 		}
+		if op.AutoWithdraw && c.NormalPending {
+			return fmt.Errorf("正常待定卡不参与自动提现")
+		}
 		n, _, e := nexovccOccupancy(tx, key.String, "")
 		if e != nil {
 			return e
