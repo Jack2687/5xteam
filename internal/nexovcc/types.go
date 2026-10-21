@@ -84,6 +84,7 @@ type PrivateCard struct {
 	Month, Year int
 }
 type Operation struct {
+	RestockTaskID        string             `json:"restock_task_id,omitempty"`
 	PlanCode             string             `json:"plan_code,omitempty"`
 	ID                   string             `json:"id"`
 	Action               string             `json:"action"`

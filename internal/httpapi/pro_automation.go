@@ -1106,6 +1106,9 @@ func (s *Server) stopProAutomations() {
 	for _, cancel := range s.proAutoJobs {
 		cancel()
 	}
+	for _, cancel := range s.proRestockStartJobs {
+		cancel()
+	}
 	s.proAutoMu.Unlock()
 	s.proAutoWG.Wait()
 }

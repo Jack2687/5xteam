@@ -2,8 +2,8 @@ const terminal = new Set(['ready', 'failed', 'cancelled'])
 export const restockTaskActive = task => !terminal.has(task.status)
 export const taskTime = value => value && !String(value).startsWith('0001') && Number.isFinite(Date.parse(value)) ? value : null
 const epoch = value => taskTime(value) ? Date.parse(value) : 0
-const stages = {queued:'排队',login:'登录',recharge:'开通 / 付款核验',oauth:'获取新授权',push:'推送 Sub2',quota:'额度巡检',merge:'合并 / 移出',manual:'手动流程'}
-const statuses = {reserved:'已预留 / 排队',submitting:'启动确认中',running:'全自动执行中',unknown:'原订单待确认',verifying:'已推送待核验',failed:'确认失败',attention:'需要核验',cancelled:'未提交已取消',external:'其他来源在途'}
+const stages = {queued:'排队',card:'卡片资料同步',login:'登录',recharge:'开通 / 付款核验',oauth:'获取新授权',push:'推送 Sub2',quota:'额度巡检',merge:'合并 / 移出',manual:'手动流程'}
+const statuses = {reserved:'已预留 / 排队',submitting:'启动确认中',waiting_card:'等待原卡 · 自动续跑',running:'全自动执行中',unknown:'原订单待确认',verifying:'已推送待核验',failed:'确认失败',attention:'需要核验',cancelled:'未提交已取消',external:'其他来源在途'}
 const milestones = {running:'开始执行',completed:'完成',failed:'失败',interrupted:'中断',waiting:'等待',queued:'排队'}
 
 export function restockTaskProgress(task) {

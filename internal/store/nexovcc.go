@@ -19,6 +19,7 @@ func (s *Store) initializeNexovcc() error {
  CREATE TABLE IF NOT EXISTS nexovcc_cache(kind TEXT PRIMARY KEY,profile TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS nexovcc_operations(id TEXT PRIMARY KEY,scope TEXT NOT NULL,profile TEXT NOT NULL,status TEXT NOT NULL);
  CREATE UNIQUE INDEX IF NOT EXISTS nexovcc_active_scope ON nexovcc_operations(scope) WHERE status NOT IN ('succeeded','failed');
+ CREATE UNIQUE INDEX IF NOT EXISTS nexovcc_restock_open ON nexovcc_operations(json_extract(profile,'$.restock_task_id')) WHERE scope='open' AND coalesce(json_extract(profile,'$.restock_task_id'),'')<>'';
  CREATE TABLE IF NOT EXISTS nexovcc_case_states(order_id TEXT PRIMARY KEY,state TEXT NOT NULL,reason TEXT NOT NULL,updated_at TEXT NOT NULL,revision INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS nexovcc_case_removals(order_id TEXT PRIMARY KEY,revision INTEGER NOT NULL,removed_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS nexovcc_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,profile TEXT NOT NULL);
@@ -411,6 +412,9 @@ type NexovccOpenAdmission struct {
 }
 
 func (s *Store) BeginNexovccOperation(op nexovcc.Operation, admission ...NexovccOpenAdmission) error {
+	if op.RestockTaskID != "" && (op.Action != "open" || !op.Automatic || len(admission) == 0 || admission[0].RestockID != op.RestockTaskID) {
+		return fmt.Errorf("环球开卡与原补货任务不匹配")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, e := s.db.Begin()

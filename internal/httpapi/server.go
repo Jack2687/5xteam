@@ -85,6 +85,7 @@ type Server struct {
 	proCardAdmissionMu        sync.Mutex
 	proAutoWG                 sync.WaitGroup
 	proAutoJobs               map[string]context.CancelFunc
+	proRestockStartJobs       map[string]context.CancelFunc
 	proAutoClosed             bool
 	proAutoCancel             context.CancelFunc
 	proAutoHooks              *proAutomationHooks

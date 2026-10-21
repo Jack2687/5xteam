@@ -51,7 +51,7 @@ function removeNoRestockWindow(index){if(form.no_restock_windows?.length>1){form
 function acceptState(data){state.value=data;if(!windowEdited.value)windowDraft.value=data.config?.money_window_minutes??3;clock.value=Date.now();const at=Date.parse(data.server_time);if(Number.isFinite(at))clockOffset.value=at-clock.value}
 const fmt=t=>t&&!String(t).startsWith('0001')?new Date(t).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'}):'—'
 const mins=n=>Number.isFinite(n)?Number(n).toFixed(1)+' 分钟':'暂不可估'
-const statuses={reserved:'已预留 / 排队',submitting:'启动确认中',running:'全自动执行中',unknown:'原订单待确认',verifying:'已推送待核验',ready:'已就绪',failed:'确认失败',attention:'需要人工核验',cancelled:'未提交已取消',external:'其他来源在途'}
+const statuses={reserved:'已预留 / 排队',submitting:'启动确认中',waiting_card:'等待原卡 · 自动续跑',running:'全自动执行中',unknown:'原订单待确认',verifying:'已推送待核验',ready:'已就绪',failed:'确认失败',attention:'需要人工核验',cancelled:'未提交已取消',external:'其他来源在途'}
 const stages={queued:'等待工作槽位',login:'登录',recharge:'开通 / 付款核验',oauth:'获取新授权',push:'推送 Sub2',quota:'额度巡检',merge:'合并 / 移出',deactivate:'删除账户'}
 const sections=[
  {title:'预计供给不足',text:'按剩余美元额度和所选时间窗口的消耗估算；样本不足时显示采样中。',fields:[['time_enabled','启用时间规则','bool'],['money_window_minutes','消耗计算窗口（分钟，默认 3）',1,60],['trigger_minutes','触发水位（分钟）',1,1439],['target_minutes','补后目标（分钟）',2,1440],['early','按实际就绪耗时提前补货','bool']]},

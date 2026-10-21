@@ -769,7 +769,7 @@ func (s *Server) openNexovccLocked(ctx context.Context, id, templateID string, a
 	if available < amount+buffer {
 		return op, fmt.Errorf("环球账户余额不足以覆盖开卡金额和预留费用")
 	}
-	op = nexovcc.Operation{PlanCode: t.PlanCode, ID: id, Action: "open", TemplateID: templateID, ProductID: product.ID, Amount: t.Amount, Remark: id, Status: "submitted", Automatic: automatic, BeforeAccountBalance: balance.Amount, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	op = nexovcc.Operation{RestockTaskID: taskID, PlanCode: t.PlanCode, ID: id, Action: "open", TemplateID: templateID, ProductID: product.ID, Amount: t.Amount, Remark: id, Status: "submitted", Automatic: automatic, BeforeAccountBalance: balance.Amount, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if e = s.store.BeginNexovccOperation(op, admission); e != nil {
 		return op, e
 	}
