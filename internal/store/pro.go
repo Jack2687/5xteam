@@ -237,6 +237,10 @@ func (s *Store) updateProAccount(email string, expected time.Time, mutate func(*
 	wasDeleted := p.DeletionAccepted()
 	previousProvider, previousSub2ID := p.PushProvider, p.Sub2AccountID
 	previousPushStatus := p.PushStatus
+	// Preserve a historical end before a manual retry replaces its stage data.
+	if p.ProPushStartedAt != nil && p.ProPushEndedAt == nil {
+		p.ProPushEndedAt = p.ProPushEndTime()
+	}
 	wasEnding := p.ProWorkflowRunning || p.SpaceMergedOnce || p.DeletionSubmitted() ||
 		(p.ProAuto.Status == "running" && (p.ProAuto.Stage == "merge" || p.ProAuto.Stage == "deactivate"))
 	if mutate != nil {
