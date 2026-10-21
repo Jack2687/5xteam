@@ -19,6 +19,7 @@ func (s *Server) exportProAccounts(w http.ResponseWriter, r *http.Request) {
 		All        bool     `json:"all"`
 		Query      string   `json:"query"`
 		MergeState string   `json:"merge_state"`
+		Format     string   `json:"format"`
 	}
 	if decodeJSON(w, r, &input, 2<<20) != nil {
 		return
@@ -38,6 +39,14 @@ func (s *Server) exportProAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(emails) == 0 || len(emails) > 10000 {
 		writeAPI(w, 400, nil, "请选择 1～10000 个 Pro 账号导出")
+		return
+	}
+	if input.Format == "credentials" {
+		s.exportAccountCredentialsText(w, r, emails, true)
+		return
+	}
+	if input.Format != "" && input.Format != "json" {
+		writeAPI(w, 400, nil, "请选择 JSON 或账号密码 2FA 文本格式")
 		return
 	}
 	settings, _, _, err := s.store.ProSettings()

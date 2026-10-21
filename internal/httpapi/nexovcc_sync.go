@@ -78,6 +78,13 @@ func (s *Server) nexovccSyncWait(cfg nexovcc.Settings, automatic bool) (string, 
 }
 
 func (s *Server) syncNexovccLocked(ctx context.Context, forceAccount ...bool) (err error) {
+	bound, finishOperation, gateErr := s.nexovccOperationContext(ctx)
+	if gateErr != nil {
+		return gateErr
+	}
+	defer finishOperation()
+	ctx = bound
+
 	cfg, _, err := s.store.NexovccSettings()
 	if err != nil {
 		return err

@@ -391,6 +391,13 @@ func (s *Server) startNexovccMonitor() {
 
 // The five sync clocks run whenever the issuer is enabled, including idle accounts.
 func (s *Server) tickNexovccMonitor(ctx context.Context) {
+	bound, finishOperation, gateErr := s.nexovccOperationContext(ctx)
+	if gateErr != nil {
+		return
+	}
+	defer finishOperation()
+	ctx = bound
+
 	if ctx.Err() != nil {
 		return
 	}

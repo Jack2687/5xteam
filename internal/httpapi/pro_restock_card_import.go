@@ -98,6 +98,9 @@ func (s *Server) startClaimedProRestock(ctx context.Context, t restock.Task, pay
 // Only resumes work that already issued its own card. It never opens another
 // card, resubmits an uncertain issuance, or makes whole-platform sync calls.
 func (s *Server) continueProRestockCardImports(ctx context.Context, c restock.Config, p model.ProSettings) {
+	if s.checkNexovccControl() != nil {
+		return
+	}
 	if !c.Enabled || c.Mode != "auto" || ctx.Err() != nil {
 		return
 	}
@@ -152,6 +155,12 @@ func (s *Server) continueProRestockCardImports(ctx context.Context, c restock.Co
 		}
 		func() {
 			defer finish()
+			bound, finishIssuer, bindErr := s.nexovccOperationContext(workCtx)
+			if bindErr != nil {
+				return
+			}
+			defer finishIssuer()
+			workCtx = bound
 			if op.Status == "import_pending" {
 				if err = s.lockNexovccOperation(workCtx); err != nil {
 					return

@@ -77,11 +77,11 @@ console.log('Passed: single/batch actions, server-side live balance, immediate p
  assert.equal(calls.some(r=>r.options.method),false,'disabled issuer refreshed on entry')
  const before=calls.length
  await context.view.watchUpdates()
- assert.equal(calls.length,before,'disabled issuer continued periodic polling')
+ assert.ok(calls.slice(before).every(r=>r.url==='/api/nexovcc/job'),'disabled issuer should only poll local stop/progress state')
  await context.view.perform({action:'balance'})
  assert.equal(calls.filter(r=>r.url==='/api/nexovcc/run').length,1,'manual query blocked')
  assert.equal(calls.find(r=>r.url==='/api/nexovcc/run').options.body.action,'balance')
- assert.equal(calls.filter(r=>r.url==='/api/nexovcc/job').length,1,'manual progress not polled')
+ assert.equal(calls.filter(r=>r.url==='/api/nexovcc/job').length,3,'initial, local state and manual progress should be polled')
  console.log('Passed: disabled Global skips automatic requests; manual query and progress remain available')
 }
 

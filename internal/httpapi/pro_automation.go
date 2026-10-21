@@ -421,7 +421,7 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			lock.Unlock()
 			var waiting *nexovccCapacityWaitError
-			if errors.As(err, &waiting) {
+			if errors.As(err, &waiting) || strings.Contains(err.Error(), nexovcc.StoppedMessage) {
 				w.Header().Set("X-Pro-Card-Wait", "nexovcc")
 				s.auditProEvent(p, "login", "waiting", "pro_auto", err.Error(), nil)
 				writeAPI(w, 409, nil, err.Error())

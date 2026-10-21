@@ -61,6 +61,7 @@ func (s *Server) proFinancialCases(cases []ejh.Case) ([]proFinancialCase, error)
 }
 
 type nexovccJob struct {
+	Paused    bool               `json:"paused"`
 	ReadOnly  bool               `json:"read_only,omitempty"`
 	ID        string             `json:"id"`
 	Status    string             `json:"status"`
@@ -73,6 +74,9 @@ type nexovccJob struct {
 	CardLabel string             `json:"card_label,omitempty"`
 }
 type nexovccRuntime struct {
+	controlMu      sync.Mutex
+	control        nexovccControlState
+	gate           *nexovcc.RequestGate
 	financeNumbers map[string]string  // Memory only; never include card numbers in dashboard/cache.
 	readCancel     context.CancelFunc // jobMu: only read-only synchronization can yield.
 
@@ -112,10 +116,13 @@ func (s *Server) nexovccRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/nexovcc/occupancy/{id}", s.getEJHOccupancyOrder)
 	m.HandleFunc("POST /api/nexovcc/occupancy/{id}/resolve", s.resolveNexovccOccupancy)
 	m.HandleFunc("POST /api/nexovcc/run", s.runNexovcc)
+	m.HandleFunc("POST /api/nexovcc/control", s.controlNexovcc)
 	m.HandleFunc("GET /api/nexovcc/job", func(w http.ResponseWriter, r *http.Request) {
-		s.nexovcc.jobMu.Lock()
-		job := s.nexovcc.job
-		s.nexovcc.jobMu.Unlock()
+		job, err := s.nexovccJobSnapshot()
+		if err != nil {
+			writeAPI(w, 500, nil, "读取环球停止状态失败")
+			return
+		}
 		writeAPI(w, 200, job, "")
 	})
 	m.HandleFunc("POST /api/nexovcc/cards/{id}/private", s.nexovccPrivate)
@@ -170,6 +177,9 @@ func (s *Server) saveNexovccSettings(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, 200, cfg, "")
 }
 func (s *Server) nexovccClientLocked() (*nexovcc.Client, nexovcc.Settings, error) {
+	if err := s.checkNexovccControl(); err != nil {
+		return nil, nexovcc.Settings{}, err
+	}
 	cfg, k, e := s.store.NexovccSettings()
 	if e != nil {
 		return nil, cfg, e
@@ -181,6 +191,7 @@ func (s *Server) nexovccClientLocked() (*nexovcc.Client, nexovcc.Settings, error
 	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("%q/%q/%q/%q", k.Login, k.Password, k.FundPassword, k.TOTPSecret)))
 	if s.nexovcc.client == nil || fingerprint != s.nexovcc.fingerprint {
 		s.nexovcc.client = nexovcc.New(k, s.nexovcc.transport)
+		s.nexovcc.client.SetRequestGate(s.nexovcc.gate)
 		s.nexovcc.fingerprint = fingerprint
 	}
 	if s.nexovcc.transport == nil {
@@ -193,6 +204,11 @@ func (s *Server) nexovccClientLocked() (*nexovcc.Client, nexovcc.Settings, error
 }
 func (s *Server) nexovccDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	control, err := s.nexovccControl()
+	if err != nil {
+		writeAPI(w, 500, nil, "读取环球停止状态失败")
+		return
+	}
 	cards, e := s.store.NexovccCards()
 	if e != nil {
 		writeAPI(w, 500, nil, "读取环球卡片失败")
@@ -255,7 +271,7 @@ func (s *Server) nexovccDashboard(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, 500, nil, "读取交易核实记录失败")
 		return
 	}
-	writeAPI(w, 200, map[string]any{"cards": rows, "operations": ops, "cases": cases, "balance": balance, "products": products, "finance": finance, "groups": groups, "review_groups": reviewGroups, "trade_reviews": reviews, "finance_error": financeError, "sync": syncState, "withdraw": withdrawState}, "")
+	writeAPI(w, 200, map[string]any{"cards": rows, "operations": ops, "cases": cases, "balance": balance, "products": products, "finance": finance, "groups": groups, "review_groups": reviewGroups, "trade_reviews": reviews, "finance_error": financeError, "sync": syncState, "withdraw": withdrawState, "control": control}, "")
 }
 func (s *Server) nexovccProgress(message string, done, total int) {
 	s.nexovcc.jobMu.Lock()
@@ -265,6 +281,17 @@ func (s *Server) nexovccProgress(message string, done, total int) {
 	s.nexovcc.jobMu.Unlock()
 }
 func (s *Server) runNexovcc(w http.ResponseWriter, r *http.Request) {
+	operationCtx, finishOperation, err := s.nexovccOperationContext(context.Background())
+	if err != nil {
+		writeAPI(w, 409, nil, err.Error())
+		return
+	}
+	started := false
+	defer func() {
+		if !started {
+			finishOperation()
+		}
+	}()
 	var in nexovccInput
 	if decodeJSON(w, r, &in, 16<<10) != nil {
 		return
@@ -344,7 +371,7 @@ func (s *Server) runNexovcc(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, 503, nil, "服务正在关闭")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), max(15*time.Minute, time.Duration(len(in.CardIDs))*2*time.Minute))
+	ctx, cancel := context.WithTimeout(operationCtx, max(15*time.Minute, time.Duration(len(in.CardIDs))*2*time.Minute))
 	if !in.AutomaticRefresh {
 		ctx = nexovcc.WithImmediateRequests(ctx)
 	}
@@ -353,7 +380,9 @@ func (s *Server) runNexovcc(w http.ResponseWriter, r *http.Request) {
 	job := s.nexovcc.job
 	s.nexovcc.wg.Add(1)
 	s.nexovcc.jobMu.Unlock()
+	started = true
 	go func() {
+		defer finishOperation()
 		defer s.nexovcc.wg.Done()
 		defer cancel()
 		defer s.nexovcc.mu.Unlock()
@@ -730,6 +759,13 @@ func (s *Server) readNexovccCardBalanceLocked(ctx context.Context, card nexovcc.
 	return card, nil
 }
 func (s *Server) openNexovccLocked(ctx context.Context, id, templateID string, automatic bool, checks ...func() error) (nexovcc.Operation, error) {
+	bound, finishOperation, gateErr := s.nexovccOperationContext(ctx)
+	if gateErr != nil {
+		return nexovcc.Operation{}, gateErr
+	}
+	defer finishOperation()
+	ctx = bound
+
 	var op nexovcc.Operation
 	if !nexovcc.ValidRequestID(id) {
 		return op, fmt.Errorf("开卡请求编号无效")
@@ -962,6 +998,13 @@ func (s *Server) verifyNexovccOperationLocked(ctx context.Context, op nexovcc.Op
 	return op
 }
 func (s *Server) resolveNexovccLocked(ctx context.Context, in nexovccInput) (nexovcc.Operation, error) {
+	bound, finishOperation, gateErr := s.nexovccOperationContext(ctx)
+	if gateErr != nil {
+		return nexovcc.Operation{}, gateErr
+	}
+	defer finishOperation()
+	ctx = bound
+
 	op, e := s.store.NexovccOperation(in.RequestID)
 	if e != nil {
 		return op, e
@@ -1104,6 +1147,13 @@ func (s *Server) ensureProviderCard(ctx context.Context, checks ...func() error)
 	return s.ensureEJHCard(ctx, checks...)
 }
 func (s *Server) ensureNexovccCard(ctx context.Context, checks ...func() error) (gptpay.Card, error) {
+	bound, finishOperation, gateErr := s.nexovccOperationContext(ctx)
+	if gateErr != nil {
+		return gptpay.Card{}, gateErr
+	}
+	defer finishOperation()
+	ctx = bound
+
 	if err := s.lockNexovccOperation(ctx); err != nil {
 		return gptpay.Card{}, err
 	}
@@ -1207,6 +1257,13 @@ func (s *Server) ensureNexovccCard(ctx context.Context, checks ...func() error) 
 // this startup attached to that exact operation; only repeat reads, never issue
 // another card. The caller holds the issuer and Pro allocation locks.
 func (s *Server) waitNexovccImportLocked(parent context.Context, op nexovcc.Operation, timeout, interval time.Duration, checks ...func() error) (nexovcc.Operation, error) {
+	bound, finishOperation, gateErr := s.nexovccOperationContext(parent)
+	if gateErr != nil {
+		return op, gateErr
+	}
+	defer finishOperation()
+	parent = bound
+
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	for op.Action == "open" && op.Status == "import_pending" && op.Serial != "" {
