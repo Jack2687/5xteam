@@ -41,16 +41,18 @@ func TestNexovccSyncIndependentIntervalsAndManualAll(t *testing.T) {
 		calls[r.Path]++
 		return base(ctx, r)
 	}
-	// Page entry shares the worker's due selection, not its old monolithic interval.
-	w := httptest.NewRecorder()
-	s.runNexovcc(w, httptest.NewRequest("POST", "/api/nexovcc/run", strings.NewReader(`{"action":"sync","automatic_refresh":true}`)))
-	s.nexovcc.wg.Wait()
-	if w.Code != 202 || s.nexovcc.job.Status != "completed" {
-		t.Fatal(w.Code, s.nexovcc.job)
+	// The background worker must refresh even without pending returns or recycling.
+	cases, _ := s.store.NexovccCases()
+	if len(cases) != 0 || cfg.MaxOnlineCards != 0 || cfg.AutoRecycleAt != 0 || cfg.AutoWithdrawEnabled {
+		t.Fatal("fixture must have no pending business")
+	}
+	s.tickNexovccMonitor(ctx)
+	if s.nexovcc.job.Status != "completed" {
+		t.Fatal(s.nexovcc.job)
 	}
 	delete(calls, "/api/login")
 	if len(calls) != 1 || calls["/api/getBalanceInfo"] != 1 {
-		t.Fatal("page queried categories not due", calls)
+		t.Fatal("worker queried categories not due", calls)
 	}
 	after, _ := s.nexovccSyncParts(cfg)
 	if !after["cards"].LastSuccess.Equal(baseline) {
@@ -59,20 +61,35 @@ func TestNexovccSyncIndependentIntervalsAndManualAll(t *testing.T) {
 	if message, err := (&Server{store: s.store}).nexovccSyncWait(cfg, true); err != nil || message == "" {
 		t.Fatal("restart lost clocks", message, err)
 	}
+	calls = map[string]int{}
+	s.tickNexovccMonitor(ctx)
+	if len(calls) != 0 {
+		t.Fatal("worker refreshed before next due time", calls)
+	}
 	// Shortening one setting takes effect immediately; other successful clocks stay intact.
 	cfg.TransactionSyncSeconds = 60
 	if _, err = s.store.SaveNexovccSettings(cfg, nexovcc.Credentials{}, false); err != nil {
 		t.Fatal(err)
 	}
 	calls = map[string]int{}
-	if err = s.syncNexovccLocked(nexovccScheduledSync(ctx)); err != nil {
+	cfg.Enabled = false
+	if _, err = s.store.SaveNexovccSettings(cfg, nexovcc.Credentials{}, false); err != nil {
 		t.Fatal(err)
 	}
+	s.tickNexovccMonitor(ctx)
+	if len(calls) != 0 {
+		t.Fatal("disabled issuer made automatic requests", calls)
+	}
+	cfg.Enabled = true
+	if _, err = s.store.SaveNexovccSettings(cfg, nexovcc.Credentials{}, false); err != nil {
+		t.Fatal(err)
+	}
+	s.tickNexovccMonitor(ctx)
 	if len(calls) != 2 || calls["/api/findLogCardTrades"] != 1 || calls["/api/findLogWebFunds"] != 1 {
 		t.Fatal("worker didn't isolate ledgers", calls)
 	}
 	calls = map[string]int{}
-	w = httptest.NewRecorder()
+	w := httptest.NewRecorder()
 	s.runNexovcc(w, httptest.NewRequest("POST", "/api/nexovcc/run", strings.NewReader(`{"action":"sync"}`)))
 	s.nexovcc.wg.Wait()
 	if w.Code != 202 || s.nexovcc.job.Status != "completed" {

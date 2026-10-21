@@ -13,6 +13,7 @@ assert endpoint.startswith('http://127.0.0.1:')
 
 class Session:
     def __init__(self, **kwargs):
+        assert kwargs.get('impersonate') == 'chrome142'
         self.headers = {}
         self.cookies = types.SimpleNamespace(set=lambda *a, **k: None)
 

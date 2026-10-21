@@ -101,8 +101,8 @@ for (const pageAutoRefresh of [true, false]) {
  vm.runInContext(code+';globalThis.view={perform,syncCardTransactions,watchUpdates};',context)
  for(const fn of mounts)await fn()
  let runs=calls.filter(r=>r.url==='/api/nexovcc/run')
- assert.equal(runs.length,pageAutoRefresh?1:0)
- if(pageAutoRefresh)assert.equal(runs[0].options.body.automatic_refresh,true)
+ assert.equal(runs.length,0,'page entry must read cache even when the legacy refresh flag is enabled')
+ assert.ok(calls.some(r=>r.url==='/api/nexovcc/dashboard'),'page entry must display stored data')
  await context.view.watchUpdates()
  assert.equal(calls.filter(r=>r.url==='/api/nexovcc/run').length,runs.length,'local progress polling triggered upstream refresh')
  await context.view.perform({action:'sync'})
@@ -117,7 +117,7 @@ for (const pageAutoRefresh of [true, false]) {
  await context.view.syncCardTransactions('missing')
  assert.equal(calls.filter(r=>r.url==='/api/nexovcc/run').length,before)
 }
-console.log('Passed: page refresh opt-out, manual full refresh, exact-card transaction refresh, invalid card does not broaden scope')
+console.log('Passed: page entry and progress polling only read cache, manual full refresh, exact-card transaction refresh, invalid card does not broaden scope')
 
 {
  const context=vm.createContext({...helpers,...finance,ref,reactive,computed,watch,

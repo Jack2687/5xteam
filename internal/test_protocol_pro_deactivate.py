@@ -1,6 +1,7 @@
 """Offline deletion contract tests; never contact an upstream service."""
 import unittest
-from protocol_pro_deactivate import run, BASE, ACCOUNTS
+from unittest.mock import patch
+from protocol_pro_deactivate import run, sentinel, BASE, ACCOUNTS, USER_AGENT, CLIENT_HINTS
 
 class Response:
     def __init__(self, status=200, data=None):
@@ -9,8 +10,10 @@ class Response:
         return self.data
 
 class Cookies:
+    def __init__(self):
+        self.values = {}
     def set(self, *args, **kwargs):
-        pass
+        self.values[args[0]] = args[1]
 
 class Session:
     def __init__(self):
@@ -50,8 +53,61 @@ class DeactivateTests(unittest.TestCase):
         self.assertEqual(self.events, ['identity', 'stage', 'submitting', 'accepted'])
         method, url, kwargs = session.calls[-1]
         self.assertEqual((method, url, kwargs['data']), ('POST', BASE + '/backend-api/accounts/deactivate', b''))
-        self.assertEqual(kwargs['headers']['chatgpt-account-id'], 'personal-1')
+        self.assertEqual(kwargs['headers']['ChatGPT-Account-ID'], 'personal-1')
         self.assertFalse(kwargs['allow_redirects'])
+
+    def test_browser_headers_match_reference_and_device_is_consistent(self):
+        session = Session()
+        sentinel_inputs = []
+        def token(client, did, ua):
+            sentinel_inputs.append((did, ua))
+            return 'fixture-sentinel'
+        result = run({'email': session.email, 'access_token': 'fixture-at'}, lambda *a: None, session, token)
+        self.assertEqual(result['status'], 'queued')
+        headers = {**session.headers, **session.calls[-1][2]['headers']}
+        self.assertIn('Chrome/142.0.0.0', headers['User-Agent'])
+        for key, value in CLIENT_HINTS.items():
+            self.assertEqual(headers[key], value)
+        self.assertEqual(headers['sec-ch-ua-full-version'], '"142.0.7444.175"')
+        self.assertEqual(headers['OAI-Device-ID'], session.cookies.values['oai-did'])
+        self.assertEqual(sentinel_inputs, [(headers['OAI-Device-ID'], headers['User-Agent'])])
+        self.assertEqual(headers['OAI-Telemetry'], '[1,null]')
+        self.assertEqual(headers['OAI-Language'], 'zh-CN')
+        self.assertEqual(headers['Accept-Language'], 'en-US,en;q=0.9')
+        self.assertEqual(headers['Referer'], BASE + '/#settings/Account')
+        self.assertEqual(headers['Accept'], 'application/json, text/plain, */*')
+        self.assertEqual(headers['Authorization'], 'Bearer fixture-at')
+        self.assertEqual(headers['OpenAI-Sentinel-Token'], 'fixture-sentinel')
+        self.assertNotIn('oai-did', {k.lower() for k in headers})
+        traces = []
+        for _, _, kwargs in session.calls:
+            h = kwargs['headers']
+            self.assertEqual(h['Sec-Fetch-Mode'], 'cors')
+            self.assertEqual(h['Sec-Fetch-Site'], 'same-origin')
+            self.assertEqual(h['Sec-Fetch-Dest'], 'empty')
+            self.assertEqual(h['Accept-Encoding'], 'gzip, deflate, br, zstd')
+            self.assertEqual(h['priority'], 'u=1, i')
+            self.assertRegex(h['traceparent'], r'^00-[0-9a-f]{32}-[0-9a-f]{16}-01$')
+            for key in ('x-datadog-trace-id', 'x-datadog-parent-id'):
+                self.assertTrue(h[key].isdigit())
+            self.assertEqual(h['x-datadog-origin'], 'rum')
+            self.assertEqual(h['x-datadog-sampling-priority'], '1')
+            self.assertIn('_dd.p.id=' + h['traceparent'][19:35], h['x-datadog-tags'])
+            traces.append(h['traceparent'])
+        self.assertEqual(len(set(traces)), len(traces))
+
+    def test_sentinel_uses_same_browser_and_request_metadata(self):
+        session = Session()
+        session.post_data = {'token': 'fixture-challenge'}
+        with patch('manager_oauth.upstream._SentinelTokenGenerator') as generator:
+            generator.return_value.generate_requirements_token.return_value = 'requirements'
+            sentinel(session, 'device-1', USER_AGENT)
+        generator.assert_called_once_with('device-1', USER_AGENT)
+        _, url, kwargs = session.calls[0]
+        self.assertEqual(url, BASE + '/backend-api/sentinel/req')
+        self.assertEqual(kwargs['headers']['Accept'], '*/*')
+        self.assertEqual(kwargs['headers']['Sec-Fetch-Mode'], 'cors')
+        self.assertEqual(kwargs['headers']['Accept-Language'], 'en-US,en;q=0.9')
 
     def test_wrong_identity_or_nonpersonal_never_submits(self):
         for mode in ('email', 'user', 'workspace'):
@@ -88,6 +144,7 @@ class DeactivateTests(unittest.TestCase):
                 self.assertEqual(result['confirmation_source'], 'http_401')
             self.assertEqual(len(session.calls), 1)
             self.assertEqual(session.calls[0][1], BASE + ACCOUNTS)
+            self.assertEqual(session.calls[0][2]['headers']['User-Agent'], USER_AGENT)
             self.assertEqual(self.events, [])
 
     def test_401_before_submission_or_without_identity_cannot_confirm(self):

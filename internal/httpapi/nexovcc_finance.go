@@ -364,7 +364,7 @@ func (s *Server) confirmCachedNexovccCloseLocked(op nexovcc.Operation) (nexovcc.
 	return op, true
 }
 
-// Refresh pending returns even while the page is closed. It shares the
+// Refresh due categories even while the page is closed. It shares the
 // operation mutex and can finish previously requested close pipelines after
 // their withdrawal is confirmed. It never replays an uncertain submitted step.
 func (s *Server) startNexovccMonitor() {
@@ -384,90 +384,75 @@ func (s *Server) startNexovccMonitor() {
 				return
 			case <-ticker.C:
 			}
-			cfg, _, err := s.store.NexovccSettings()
-			if err != nil || !cfg.Enabled {
-				continue
-			}
-			cases, err := s.store.NexovccCases()
-			if err != nil {
-				continue
-			}
-			pending := cfg.MaxOnlineCards > 0 || cfg.AutoRecycleAt > 0 || cfg.AutoWithdrawEnabled
-			for _, c := range cases {
-				if c.PaymentStatus == "success" && (c.State != "returned" || c.Match == nil) {
-					pending = true
-					break
-				}
-			}
-			ops, err := s.store.NexovccOperations()
-			if err != nil {
-				continue
-			}
-			for _, op := range ops {
-				if !op.Terminal() {
-					pending = true
-				}
-			}
-			if !pending {
-				continue
-			}
-			if cfg.AutoWithdrawEnabled {
-				_, _ = s.runNexovccWithdrawCheck(ctx)
-			}
-			if !s.nexovcc.mu.TryLock() {
-				continue
-			}
-			if message, err := s.nexovccSyncWait(cfg, true); err != nil || message != "" {
-				s.nexovcc.mu.Unlock()
-				continue
-			}
-			s.nexovcc.jobMu.Lock()
-			if s.nexovcc.closed {
-				s.nexovcc.jobMu.Unlock()
-				s.nexovcc.mu.Unlock()
-				return
-			}
-			jobID := randomRegistrationID()
-			s.nexovcc.job = nexovccJob{ID: jobID, Status: "running", Message: "自动同步回款与资金流水", Total: 4}
-			s.nexovcc.jobMu.Unlock()
-			workCtx, stop := context.WithTimeout(ctx, 10*time.Minute)
-			err = s.syncNexovccLocked(nexovccScheduledSync(workCtx))
-			// Financial reads do not own Pro admission. Acquire both locks in the
-			// established order only for automatic card mutations.
-			s.nexovcc.mu.Unlock()
-			if err == nil && s.proCardAdmissionMu.TryLock() {
-				if s.nexovcc.mu.TryLock() {
-					s.nexovcc.jobMu.Lock()
-					sameJob := s.nexovcc.job.ID == jobID
-					s.nexovcc.jobMu.Unlock()
-					if sameJob {
-						err = s.autoRecycleNexovccLocked(workCtx)
-					}
-					s.nexovcc.mu.Unlock()
-				}
-				s.proCardAdmissionMu.Unlock()
-			}
-			s.nexovcc.mu.Lock()
-			stop()
-			s.nexovcc.jobMu.Lock()
-			if s.nexovcc.job.ID != jobID {
-				s.nexovcc.jobMu.Unlock()
-				s.nexovcc.mu.Unlock()
-				continue
-			}
-			s.nexovcc.job.Status = "completed"
-			s.nexovcc.job.Message = "回款与资金流水已更新"
-			s.nexovcc.job.Done = s.nexovcc.job.Total
-			if err != nil {
-				s.nexovcc.job.Status = "failed"
-				s.nexovcc.job.Message = fmt.Sprint(err)
-				var waiting *nexovccCapacityWaitError
-				if errors.As(err, &waiting) || errors.Is(err, errNexovccReadYielded) {
-					s.nexovcc.job.Status = "completed"
-				}
-			}
-			s.nexovcc.jobMu.Unlock()
-			s.nexovcc.mu.Unlock()
+			s.tickNexovccMonitor(ctx)
 		}
 	}()
+}
+
+// The five sync clocks run whenever the issuer is enabled, including idle accounts.
+func (s *Server) tickNexovccMonitor(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	cfg, _, err := s.store.NexovccSettings()
+	if err != nil || !cfg.Enabled {
+		return
+	}
+	if cfg.AutoWithdrawEnabled {
+		_, _ = s.runNexovccWithdrawCheck(ctx)
+	}
+	if !s.nexovcc.mu.TryLock() {
+		return
+	}
+	if message, err := s.nexovccSyncWait(cfg, true); err != nil || message != "" {
+		s.nexovcc.mu.Unlock()
+		return
+	}
+	s.nexovcc.jobMu.Lock()
+	if s.nexovcc.closed {
+		s.nexovcc.jobMu.Unlock()
+		s.nexovcc.mu.Unlock()
+		return
+	}
+	jobID := randomRegistrationID()
+	s.nexovcc.job = nexovccJob{ID: jobID, Status: "running", Message: "按分项间隔自动同步环球卡台", Total: 5}
+	s.nexovcc.jobMu.Unlock()
+	workCtx, stop := context.WithTimeout(ctx, 10*time.Minute)
+	err = s.syncNexovccLocked(nexovccScheduledSync(workCtx))
+	// Financial reads do not own Pro admission. Acquire both locks in the
+	// established order only for automatic card mutations.
+	s.nexovcc.mu.Unlock()
+	if err == nil && s.proCardAdmissionMu.TryLock() {
+		if s.nexovcc.mu.TryLock() {
+			s.nexovcc.jobMu.Lock()
+			sameJob := s.nexovcc.job.ID == jobID
+			s.nexovcc.jobMu.Unlock()
+			if sameJob {
+				err = s.autoRecycleNexovccLocked(workCtx)
+			}
+			s.nexovcc.mu.Unlock()
+		}
+		s.proCardAdmissionMu.Unlock()
+	}
+	s.nexovcc.mu.Lock()
+	stop()
+	s.nexovcc.jobMu.Lock()
+	if s.nexovcc.job.ID != jobID {
+		s.nexovcc.jobMu.Unlock()
+		s.nexovcc.mu.Unlock()
+		return
+	}
+	s.nexovcc.job.Status = "completed"
+	s.nexovcc.job.Message = "到期项目已同步"
+	s.nexovcc.job.Done = s.nexovcc.job.Total
+	if err != nil {
+		s.nexovcc.job.Status = "failed"
+		s.nexovcc.job.Message = fmt.Sprint(err)
+		var waiting *nexovccCapacityWaitError
+		if errors.As(err, &waiting) || errors.Is(err, errNexovccReadYielded) {
+			s.nexovcc.job.Status = "completed"
+		}
+	}
+	s.nexovcc.jobMu.Unlock()
+	s.nexovcc.mu.Unlock()
 }
