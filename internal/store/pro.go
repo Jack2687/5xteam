@@ -324,7 +324,13 @@ func (s *Store) RecoverProWorkflows() error {
 		}
 		legacyCancelled := p.TransferStatus == "failed" && (strings.Contains(p.ProLastError, "context canceled") || strings.Contains(p.ProLastError, "context deadline exceeded"))
 		groupsRunning := p.ProPostMergeGroups != nil && p.ProPostMergeGroups.Status == "running"
-		deletionNeedsRecovery := p.ProDeactivation != nil && (p.ProDeactivation.Status == "running" || p.DeletionSubmitted() && p.ProDeactivation.NextCheckAt == nil && (!p.DeletionConfirmed() || p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending()))
+		// Normalize clocks saved by older versions without reviving completed
+		// deletion workflows, even when downstream cleanup remains unfinished.
+		deletionReconciled := false
+		if p.DeletionConfirmed() {
+			deletionReconciled = p.ReconcileProAutoDeletion(time.Now())
+		}
+		deletionNeedsRecovery := p.ProDeactivation != nil && (deletionReconciled || p.ProDeactivation.Status == "running" || p.DeletionNeedsContinuation() && p.ProDeactivation.NextCheckAt == nil)
 		if !p.ProWorkflowRunning && !legacyCancelled && !groupsRunning && !deletionNeedsRecovery {
 			continue
 		}
@@ -343,7 +349,7 @@ func (s *Store) RecoverProWorkflows() error {
 			d.Error = "服务重启，可续跑核验；已提交的删除不会重复发送"
 			d.UpdatedAt = time.Now()
 		}
-		if d := p.ProDeactivation; d != nil && d.SubmittedAt != nil && (!p.DeletionConfirmed() || p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending()) {
+		if d := p.ProDeactivation; d != nil && p.DeletionNeedsContinuation() {
 			next := time.Now().Add(settings.DeletionCheckInterval())
 			d.NextCheckAt = &next
 		}
@@ -363,6 +369,10 @@ func (s *Store) RecoverProWorkflows() error {
 		p.ProLastError = "服务重启，流程将在下次检测或手动执行时续跑"
 		if p.TransferStatus == "unknown" {
 			p.ProLastError = "服务在合并途中重启，远端结果待确认；请核实合并结果后手动修正状态再续跑"
+		}
+		if p.DeletionConfirmed() {
+			p.ProDeactivation.Status, p.ProDeactivation.Stage = "completed", "confirm"
+			p.ProLastError = p.ProDeactivation.Error
 		}
 		p.UpdatedAt = time.Now()
 		updates = append(updates, item{email: email, profile: p})

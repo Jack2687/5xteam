@@ -226,11 +226,10 @@ func (p MailAccountProfile) ProStages() ProStageDisplay {
 		if d.SubmittedAt != nil && d.ConfirmedAt == nil {
 			status = "waiting"
 		}
-		if d.ConfirmedAt != nil && (p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending()) {
-			status = "waiting"
-		}
 		delete(v.Errors, "deactivate")
-		if d.Error != "" {
+		if d.ConfirmedAt != nil {
+			status = "completed"
+		} else if d.Error != "" {
 			status = "failed"
 		}
 		v.Steps["deactivate"] = status

@@ -166,7 +166,7 @@ func TestProDeletionIndependentIntervalAndConfirmedStopsChecks(t *testing.T) {
 		t.Fatal("confirmation did not stop timer", err)
 	}
 	confirmedCalls := calls
-	// Downstream cleanup may retry, but must never re-query or resubmit deletion.
+	// Explicit cleanup retries must not query deletion or schedule another retry.
 	if _, err = f.s.store.UpdateProAccount(f.email, func(p *model.MailAccountProfile) { p.ProPostMergeGroups.Status = "failed" }); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestProDeletionIndependentIntervalAndConfirmedStopsChecks(t *testing.T) {
 	f.mu.Unlock()
 	f.fail.Store(true)
 	p, err = f.s.performProDeactivation(t.Context(), f.email)
-	if err == nil || calls != confirmedCalls || !p.DeletionConfirmed() || p.ProDeactivation.NextCheckAt == nil {
+	if err == nil || calls != confirmedCalls || !p.DeletionConfirmed() || p.ProDeactivation.NextCheckAt != nil {
 		t.Fatalf("cleanup retry: protocol calls=%d want=%d err=%v state=%+v", calls, confirmedCalls, err, p.ProDeactivation)
 	}
 	f.fail.Store(false)
@@ -281,7 +281,7 @@ func TestProDeletionConfirmationContinuesWhileGroupingFails(t *testing.T) {
 		},
 	}
 	p, err = f.s.performProDeactivation(t.Context(), f.email)
-	if err == nil || !p.DeletionConfirmed() || p.ProDeactivation.ConfirmationSource != "http_401" || p.ProDeactivation.Steps["confirm"] != "completed" || !p.ProPostMergeGroupsPending() {
+	if err == nil || !p.DeletionConfirmed() || p.ProDeactivation.ConfirmationSource != "http_401" || p.ProDeactivation.Steps["confirm"] != "completed" || !p.ProPostMergeGroupsPending() || p.ProDeactivation.NextCheckAt != nil {
 		t.Fatal("grouping failure blocked confirmation", err, p.ProDeactivation)
 	}
 	if _, err = f.s.performProDeactivation(t.Context(), f.email); err == nil || checks != 1 {

@@ -45,7 +45,9 @@ func (s ProSettings) DeletionCheckInterval() time.Duration {
 }
 
 func (p MailAccountProfile) DeletionNeedsContinuation() bool {
-	return p.DeletionSubmitted() && (!p.DeletionConfirmed() || p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending())
+	// Confirmation is terminal for background work. Failed downstream cleanup
+	// remains visible and may only be resumed by an explicit operator action.
+	return p.DeletionSubmitted() && !p.DeletionConfirmed()
 }
 func (s ProSettings) Disposition() string {
 	if s.AutoDeleteEnabled {
@@ -70,24 +72,33 @@ func (p MailAccountProfile) DeletionAccepted() bool {
 }
 func (p *MailAccountProfile) ReconcileProAutoDeletion(now time.Time) bool {
 	d := p.ProDeactivation
-	if d == nil || d.SubmittedAt == nil || p.ProAuto.ID == "" {
+	if d == nil || d.SubmittedAt == nil {
 		return false
 	}
-	status, step := "awaiting_deletion", "waiting"
-	if d.ConfirmedAt != nil && !p.ProPostMergeGroupsPending() && !p.ProVM2CleanupPending() {
-		status, step = "completed", "completed"
+	changed := false
+	if d.ConfirmedAt != nil && d.NextCheckAt != nil {
+		d.NextCheckAt = nil
+		changed = true
 	}
-	if d.Error != "" {
+	if p.ProAuto.ID == "" {
+		return changed
+	}
+	status, step := "awaiting_deletion", "waiting"
+	autoError := d.Error
+	if d.ConfirmedAt != nil {
+		status, step = "completed", "completed"
+		autoError = ""
+	} else if d.Error != "" {
 		step = "failed"
 	}
 	if p.ProAuto.StopRequested {
 		status = "stopped"
 	}
-	changed := p.ProAuto.Stage != "deactivate" || p.ProAuto.Status != status || p.ProAuto.NextCheckAt != nil || p.ProAuto.Error != d.Error
+	changed = changed || p.ProAuto.Stage != "deactivate" || p.ProAuto.Status != status || p.ProAuto.NextCheckAt != nil || p.ProAuto.Error != autoError || p.ProAuto.Steps["deactivate"] != step
 	if p.ProAuto.Steps == nil {
 		p.ProAuto.Steps = map[string]string{}
 	}
-	p.ProAuto.Stage, p.ProAuto.Status, p.ProAuto.Error = "deactivate", status, d.Error
+	p.ProAuto.Stage, p.ProAuto.Status, p.ProAuto.Error = "deactivate", status, autoError
 	p.ProAuto.Steps["deactivate"] = step
 	p.ProAuto.NextCheckAt = nil
 	if changed {

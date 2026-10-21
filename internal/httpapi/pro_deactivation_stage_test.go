@@ -28,7 +28,7 @@ func deletionStageEdit(t *testing.T, f *proExecutionFixture, stage, status strin
 	return r.Code
 }
 
-func TestProDeletionManualConfirmationContinuesCleanupWithoutReplay(t *testing.T) {
+func TestProDeletionManualConfirmationStopsTimersAndAllowsManualCleanup(t *testing.T) {
 	f := newProGroupFixture(t)
 	enableDeletion(t, f.proExecutionFixture)
 	now := time.Now().Add(-time.Hour)
@@ -52,8 +52,8 @@ func TestProDeletionManualConfirmationContinuesCleanupWithoutReplay(t *testing.T
 	if !p.DeletionConfirmed() || !p.DeletionAccepted() || !d.SubmittedAt.Equal(now) || d.ConfirmationSource != "manual" || d.Manual["confirm"].Status != "completed" || d.Error != "" {
 		t.Fatalf("manual confirmation missing: %+v", d)
 	}
-	if d.NextCheckAt == nil || !p.ProPostMergeGroupsPending() || p.ProAuto.Status != "awaiting_deletion" {
-		t.Fatal("lost downstream continuation")
+	if d.NextCheckAt != nil || !p.ProPostMergeGroupsPending() || p.ProAuto.Status != "completed" {
+		t.Fatal("manual confirmation did not stop background work")
 	}
 	if !reflect.DeepEqual(creds, afterCreds) || p.SpaceMergedOnce != before.SpaceMergedOnce || p.TransferStatus != before.TransferStatus || len(f.calls) != 0 || f.reads.Load() != 0 || f.writes.Load() != 0 {
 		t.Fatal("editing performed remote action or changed unrelated facts")
@@ -61,6 +61,25 @@ func TestProDeletionManualConfirmationContinuesCleanupWithoutReplay(t *testing.T
 	if !p.ProStages().Manual["deactivate"] {
 		t.Fatal("full automation omitted manual attribution")
 	}
+	if err = f.s.store.RecoverProWorkflows(); err != nil {
+		t.Fatal(err)
+	}
+	f.s.tickProDeactivations(t.Context())
+	if err = f.s.runProAutomationTail(t.Context(), f.email); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.s.performProDisposition(t.Context(), f.email); err != nil {
+		t.Fatal(err)
+	}
+	if f.reads.Load() != 0 || f.writes.Load() != 0 {
+		t.Fatal("manual confirmation scheduled downstream work after restart")
+	}
+	for _, action := range []string{"deactivate", "automatic"} {
+		if _, err = f.s.startProEndJob(f.email, nil, nil, action); err == nil {
+			t.Fatal("stale automatic job resumed confirmed deletion", action)
+		}
+	}
+	// Explicit operator retries may still finish the saved grouping plan.
 	if p, err = f.s.performProDeactivation(t.Context(), f.email); err != nil || p.ProPostMergeGroupsPending() || p.ProDeactivation.NextCheckAt != nil || p.ProAuto.Status != "completed" {
 		t.Fatal("cleanup failed", err)
 	}

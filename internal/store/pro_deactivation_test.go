@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -97,7 +98,7 @@ func TestProDeletionIntervalRescheduleAndRecovery(t *testing.T) {
 		next := p.ProDeactivation.NextCheckAt
 		clocks[state] = next
 		switch state {
-		case "confirmed":
+		case "confirmed", "cleanup":
 			if next != nil {
 				t.Fatal("confirmed account scheduled again")
 			}
@@ -155,8 +156,39 @@ func TestProDeletionIntervalRescheduleAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range items {
-		if p.Email == "confirmed@example.com" || p.Email == "stopped@example.com" || p.Email == "paused@example.com" {
+		if p.Email == "confirmed@example.com" || p.Email == "cleanup@example.com" || p.Email == "stopped@example.com" || p.Email == "paused@example.com" {
 			t.Fatal("ineligible task selected", p.Email)
+		}
+	}
+}
+
+func TestProDeletionRecoveryClearsLegacyCompletedCleanupClocks(t *testing.T) {
+	s := transferStore(t)
+	for _, source := range []string{"manual", "http_401"} {
+		email := source + "@example.com"
+		past := time.Now().Add(-time.Hour)
+		p := model.MailAccountProfile{Email: email, ManagementScope: "pro", ProAuto: model.ProAutoState{ID: "legacy", Status: "awaiting_deletion", Error: "group failed"}, ProDeactivation: &model.ProDeactivation{Status: "completed", SubmittedAt: &past, AcceptedAt: &past, ConfirmedAt: &past, ConfirmationSource: source, NextCheckAt: &past, Error: "group failed"}, ProPostMergeGroups: &model.ProPostMergeGroups{Action: "deactivate", Status: "failed", Error: "group failed"}}
+		if _, err := s.SaveMailAccount(p, model.MailAccountCredentials{Email: email}); err != nil {
+			t.Fatal(err)
+		}
+		// Emulate an old persisted record without passing through reconciliation.
+		raw, _ := json.Marshal(p)
+		if _, err := s.db.Exec("UPDATE mail_accounts SET profile=? WHERE email=?", string(raw), email); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if due, err := s.DueProDeactivations(time.Now()); err != nil || len(due) != 0 {
+		t.Fatal("legacy confirmed record was scheduled", due, err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.RecoverProWorkflows(); err != nil {
+			t.Fatal(err)
+		}
+		for _, source := range []string{"manual", "http_401"} {
+			p, _, err := s.MailAccountCredential(source + "@example.com")
+			if err != nil || p.ProDeactivation.NextCheckAt != nil || p.ProAuto.Status != "completed" || p.ProAuto.Error != "" || p.ProPostMergeGroups.Status != "failed" || p.ProPostMergeGroups.Error != "group failed" {
+				t.Fatal("restart did not stop completed workflow while retaining cleanup error", p.ProDeactivation, err)
+			}
 		}
 	}
 }

@@ -20,8 +20,8 @@ func TestProDeletionDisplayAndCompletion(t *testing.T) {
 	p.ProDeactivation.ConfirmedAt = &now
 	p.ProDeactivation.Status = "completed"
 	p.ReconcileProAutoDeletion(now)
-	if p.ProAuto.Status != "awaiting_deletion" || p.ProStages().Steps["deactivate"] != "waiting" {
-		t.Fatal("unfinished groups ignored")
+	if p.ProAuto.Status != "completed" || p.ProStages().Steps["deactivate"] != "completed" || p.DeletionNeedsContinuation() {
+		t.Fatal("confirmed deletion continued waiting for groups")
 	}
 	p.ProPostMergeGroups.Status = "completed"
 	p.ReconcileProAutoDeletion(now)
@@ -32,5 +32,28 @@ func TestProDeletionDisplayAndCompletion(t *testing.T) {
 	p.ReconcileProAutoDeletion(now)
 	if p.ProAuto.Status != "stopped" {
 		t.Fatal("stop request overwritten")
+	}
+}
+
+func TestProDeletionConfirmationStopsClocksWithCleanupErrors(t *testing.T) {
+	for _, source := range []string{"manual", "http_401", "upstream"} {
+		t.Run(source, func(t *testing.T) {
+			now := time.Now()
+			p := MailAccountProfile{
+				ProAuto:            ProAutoState{ID: "auto", Status: "awaiting_deletion", NextCheckAt: &now},
+				ProDeactivation:    &ProDeactivation{Status: "completed", SubmittedAt: &now, AcceptedAt: &now, ConfirmedAt: &now, NextCheckAt: &now, ConfirmationSource: source, Error: "group unavailable"},
+				ProPostMergeGroups: &ProPostMergeGroups{Action: "deactivate", Status: "failed", Error: "group unavailable"},
+				VM2:                &ProVM2Binding{Stage: "delete_failed", Error: "cleanup unavailable"},
+			}
+			if !p.ReconcileProAutoDeletion(now) || p.DeletionNeedsContinuation() || p.ProDeactivation.NextCheckAt != nil || p.ProAuto.NextCheckAt != nil || p.ProAuto.Status != "completed" || p.ProAuto.Error != "" || p.ProStages().Steps["deactivate"] != "completed" {
+				t.Fatal("confirmed deletion is not terminal")
+			}
+			if p.ProPostMergeGroups.Status != "failed" || p.ProDeactivation.Error != "group unavailable" {
+				t.Fatal("cleanup error was lost")
+			}
+			if p.ReconcileProAutoDeletion(now.Add(time.Minute)) {
+				t.Fatal("completed state did not stabilize")
+			}
+		})
 	}
 }

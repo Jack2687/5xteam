@@ -26,7 +26,8 @@ function change(key,label,event) { const status=event.target.value; event.target
     <small v-if="state.accepted_at">提交成功：{{ formatTime(state.accepted_at) }}</small>
     <small v-else-if="state.submitted_at">提交请求：{{ formatTime(state.submitted_at) }}</small>
     <small v-if="state.confirmed_at">{{ state.confirmation_source === 'manual' ? '手动确认' : '确认时间' }}：{{ formatTime(state.confirmed_at) }}</small>
-    <small v-if="state.next_check_at">{{ state.confirmed_at ? '下次后续处理' : '下次核验' }}：{{ formatTime(state.next_check_at) }}</small>
+    <small v-if="state.confirmed_at">已停止定时续跑</small>
+    <small v-else-if="state.next_check_at">下次核验：{{ formatTime(state.next_check_at) }}</small>
     <small v-if="groups" :class="{'danger-text':groups.error}">分组调整：{{ names[groups.status] || '待执行' }}</small>
     <CompactErrorDetails :messages="errors" />
     <button v-if="state.submitted_at && (state.error || groups && groups.status !== 'completed')" type="button" class="btn ghost compact" :disabled="disabled" @click="$emit('retry')">{{ state.confirmed_at ? '续跑分组调整' : '续跑核验及分组调整' }}</button>

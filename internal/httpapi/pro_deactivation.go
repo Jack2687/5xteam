@@ -27,6 +27,9 @@ func (s *Server) performProDisposition(ctx context.Context, email string) (model
 	if err != nil {
 		return p, err
 	}
+	if p.DeletionConfirmed() {
+		return p, nil
+	}
 	c, _, _, err := s.store.ProSettings()
 	if err != nil {
 		return p, err

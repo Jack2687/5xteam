@@ -91,7 +91,7 @@ async function saveDeletionStage(account, step) {
   const expected=account.pro_deactivation?.steps?.[step.key]||''
   if (expected===step.status) return
   const labels={not_started:'未开始',pending:'待处理',completed:'成功',failed:'失败',interrupted:'已中断',unknown:'待核实',waiting:'等待确认'}
-  const effect=step.key==='confirm' && step.status==='completed' ? '将按你核实的结果记录为已删除，停止删除结果核验；未完成的分组调整继续处理，退款仍以卡台流水为准。' : step.key==='submit' && step.status==='completed' ? '将记录为删除已提交，继续核验结果和处理分组，不会再次发送删除请求。' : step.key==='confirm' ? '将重新核验原删除请求；保留已提交记录，不会重复发送删除。' : '修改阶段记录；保留已发送的删除记录，续跑仍执行必要验证，不会重复提交删除。'
+  const effect=step.key==='confirm' && step.status==='completed' ? '将按你核实的结果记录为已删除，停止所有定时续跑；未完成的分组调整只能手动续跑，退款仍以卡台流水为准。' : step.key==='submit' && step.status==='completed' ? '将记录为删除已提交，继续核验结果和处理分组，不会再次发送删除请求。' : step.key==='confirm' ? '将重新核验原删除请求；保留已提交记录，不会重复发送删除。' : '修改阶段记录；保留已发送的删除记录，续跑仍执行必要验证，不会重复提交删除。'
   if (!window.confirm(`将 ${account.email} 的删除${step.label}标记为“${labels[step.status]}”？${effect}`)) return
   busy.value='deletion-stage:'+account.email
   try {

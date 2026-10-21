@@ -61,6 +61,9 @@ func (s *Server) startProEndJob(email string, unlock func(), quality *proQuality
 			action = "deactivate"
 		}
 	}
+	if action == "deactivate" && p.DeletionConfirmed() && !resumeDeletion {
+		return p, errors.New("删除已确认完成，后续分组调整请手动续跑")
+	}
 	if action == "merge" && proTransferNeedsConfirmation(p) {
 		_, _ = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
 			p.TransferStatus = "unknown"

@@ -101,7 +101,7 @@ func (s *Server) updateProDeletionStage(w http.ResponseWriter, r *http.Request) 
 					d.ConfirmedAt = &now
 				}
 				d.ConfirmationSource = "manual"
-				d.Message = "手动确认删除成功，已停止删除结果核验"
+				d.Message = "手动确认删除成功，已停止所有定时续跑"
 				if !wasAccepted {
 					d.Manual["submit"] = model.ProStageOverride{Status: "completed", UpdatedAt: now}
 				}

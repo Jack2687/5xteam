@@ -868,12 +868,12 @@ func (s *Server) runProAutomationTail(ctx context.Context, email string) error {
 	if err != nil {
 		return err
 	}
+	if p.DeletionConfirmed() || p.ProAuto.Status == "completed" {
+		return nil
+	}
 	if p.DeletionSubmitted() {
 		_, err = s.performProDeactivation(ctx, email)
 		return err
-	}
-	if p.ProAuto.Status == "completed" {
-		return nil
 	}
 	settings, _, _, err := s.proAccountPushSettings(p)
 	if err != nil {
