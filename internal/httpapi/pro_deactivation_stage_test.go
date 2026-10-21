@@ -108,6 +108,9 @@ func TestProDeletionManualStagesKeepSubmissionGuard(t *testing.T) {
 			if p.DeletionSubmitted() || p.ProDeactivation.Steps[stage] != status || p.ProDeactivation.Manual[stage].Status != status {
 				t.Fatal("pre-submit edit created submission or lost annotation")
 			}
+			if p.ProStages().Steps["deactivate"] == "completed" {
+				t.Fatal("an individual preparatory step marked the entire deletion complete")
+			}
 		}
 	}
 	if code := deletionStageEdit(t, f, "submit", "completed"); code != 200 {

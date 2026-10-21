@@ -129,6 +129,10 @@ func (s *Server) updateProDeletionStage(w http.ResponseWriter, r *http.Request) 
 			d.Status, d.Stage = "unknown", "submit"
 		default:
 			d.Status, d.Stage = input.Status, input.Stage
+			if input.Status == "completed" {
+				// Completing credentials or verification is not deletion success.
+				d.Status = "pending"
+			}
 		}
 		d.NextCheckAt = nil
 		if p.DeletionNeedsContinuation() {
