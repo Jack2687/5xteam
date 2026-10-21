@@ -212,6 +212,8 @@ type Task struct {
 	OrderID            string                  `json:"order_id"`
 	CardID             string                  `json:"card_id"`
 	NextCardCheckAt    *time.Time              `json:"next_card_check_at,omitempty"`
+	StoppedAt          *time.Time              `json:"stopped_at,omitempty"`
+	StoppedFailure     bool                    `json:"stopped_failure,omitempty"`
 	AccountID          int64                   `json:"account_id"`
 	Cost               int64                   `json:"cost"`
 	CreatedAt          time.Time               `json:"created_at"`

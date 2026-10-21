@@ -237,6 +237,8 @@ func (s *Store) updateProAccount(email string, expected time.Time, mutate func(*
 	wasDeleted := p.DeletionAccepted()
 	previousProvider, previousSub2ID := p.PushProvider, p.Sub2AccountID
 	previousPushStatus := p.PushStatus
+	wasEnding := p.ProWorkflowRunning || p.SpaceMergedOnce || p.DeletionSubmitted() ||
+		(p.ProAuto.Status == "running" && (p.ProAuto.Stage == "merge" || p.ProAuto.Stage == "deactivate"))
 	if mutate != nil {
 		mutate(&p)
 	}
@@ -254,6 +256,9 @@ func (s *Store) updateProAccount(email string, expected time.Time, mutate func(*
 		p.ReconcileProAutoMerge(p.UpdatedAt)
 	}
 	p.ReconcileProQualityMerge()
+	if p.ProPushEndTime() != nil || !wasEnding {
+		p.FreezeProPushDuration(p.UpdatedAt)
+	}
 	encoded, err := json.Marshal(p)
 	if err != nil {
 		return p, err

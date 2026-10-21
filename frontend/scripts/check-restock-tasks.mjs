@@ -29,3 +29,5 @@ assert.deepEqual(restockTaskTimeline(old).map(t=>t.label),['登录 · 开始执�
 assert.equal(restockTaskTimeline({stages:{login:'0001-01-01T00:00:00Z',push:'invalid'}}).length,0)
 assert.deepEqual(input,original,'presenting history must not mutate task state or scheduling inputs')
 console.log('Passed: restock task sorting/filtering, execution and verified-success times, historical stages and missing milestones')
+
+assert.equal(restockTaskProgress({status:'cancelled',stopped_at:'2026-10-21T06:00:00Z',submitted_at:'2026-10-21T05:00:00Z'}).status,'已手动停止')

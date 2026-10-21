@@ -11,7 +11,7 @@ export function restockTaskProgress(task) {
  const started=Object.entries(times).filter(([key,at])=>/^(login|recharge|oauth|push):running$/.test(key)&&taskTime(at)).map(([,at])=>at).sort((a,b)=>epoch(a)-epoch(b))[0]||null
  const submitted=taskTime(task.submitted_at),success=task.status==='ready'?taskTime(task.ready_at):null
  const pushed=taskTime(times['push:completed'])
- const status=task.status==='ready'?(success?'补货成功':'已交付'):statuses[task.status]||task.status
+ const status=task.stopped_at?'已手动停止':task.status==='ready'?(success?'补货成功':'已交付'):statuses[task.status]||task.status
  const stage=task.status==='ready'?(success?'推送后核验完成':'已进入后续流程'):stages[task.stage]||task.stage||'尚未执行'
  const message=task.status==='ready'?(success?'已完成推送并核验；此处记录补货结果，当前可用状态见监控。':task.message||'已交付，不再占用补货在途；历史核验时间未记录。'):task.message||'持续跟踪'
  return {active,started,submitted,success,pushed,status,stage,message,eta:active?taskTime(task.eta):null,

@@ -569,6 +569,7 @@ func preserveProProfile(profile *model.MailAccountProfile, old model.MailAccount
 	profile.ProPushTimeoutEnabled, profile.ProPushTimeoutMinutes = old.ProPushTimeoutEnabled, old.ProPushTimeoutMinutes
 	profile.ProPushDownstream = old.ProPushDownstream
 	profile.ProForceMergeNextAt, profile.ProForceMergeAttempts = old.ProForceMergeNextAt, old.ProForceMergeAttempts
+	profile.ProPushEndedAt = old.ProPushEndedAt
 	profile.ProAuto = old.ProAuto
 	profile.ProMigration = old.ProMigration
 	profile.ProManualStages = old.ProManualStages

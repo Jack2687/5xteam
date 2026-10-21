@@ -11,19 +11,19 @@ import (
 	"chatgpt-space-merge/internal/nexovcc"
 )
 
-// Routine refreshes query the same non-deleted cards shown in the normal tab.
+// Routine refreshes query only the cards shown in the normal tab.
 // Pending closing operations reconcile their own receipts separately.
 func (s *Server) syncNexovccFinanceLocked(ctx context.Context, forceAccount ...bool) error {
-	return s.syncNexovccFinanceScopeLocked(ctx, "", true, len(forceAccount) > 0 && forceAccount[0])
+	return s.syncNexovccFinanceScopeLocked(ctx, "", true, len(forceAccount) > 0 && forceAccount[0], "normal")
 }
 
 // An empty card ID selects normal cards; an explicit ID can refresh closed
 // history too. These actions never expand into account-wide ledger requests.
 func (s *Server) syncNexovccTransactionsLocked(ctx context.Context, cardID string) error {
-	return s.syncNexovccFinanceScopeLocked(ctx, cardID, false, false)
+	return s.syncNexovccFinanceScopeLocked(ctx, cardID, false, false, "normal")
 }
 
-func (s *Server) syncNexovccFinanceScopeLocked(ctx context.Context, cardID string, account, forceAccount bool) (err error) {
+func (s *Server) syncNexovccFinanceScopeLocked(ctx context.Context, cardID string, account, forceAccount bool, category string) (err error) {
 	defer func() {
 		if ctx.Err() != nil || !account {
 			return
@@ -57,7 +57,7 @@ func (s *Server) syncNexovccFinanceScopeLocked(ctx context.Context, cardID strin
 	}
 	selected := make([]nexovcc.Card, 0, len(cards))
 	for _, card := range cards {
-		if cardID != "" && card.ID == cardID || cardID == "" && card.Status != "4" {
+		if cardID != "" && card.ID == cardID || cardID == "" && card.Status != "4" && card.NormalPending == (category == "normal_pending") {
 			selected = append(selected, card)
 		}
 	}
@@ -100,6 +100,9 @@ func (s *Server) syncNexovccFinanceScopeLocked(ctx context.Context, cardID strin
 			break
 		}
 		label := "同步正常卡交易明细"
+		if category == "normal_pending" {
+			label = "同步正常待定卡交易明细"
+		}
 		if cardID != "" {
 			label = "同步本卡交易明细"
 		}
@@ -136,7 +139,10 @@ func (s *Server) syncNexovccFinanceScopeLocked(ctx context.Context, cardID strin
 	if err = s.store.SaveNexovccFinance(f); err != nil {
 		return err
 	}
-	message := fmt.Sprintf("已同步 %d 张正常卡交易明细，%d 张销卡保留历史数据", len(cards), skipped)
+	message := fmt.Sprintf("已同步 %d 张正常卡交易明细，%d 张正常待定或销卡保留已有数据", len(cards), skipped)
+	if category == "normal_pending" {
+		message = fmt.Sprintf("已同步 %d 张正常待定卡交易与资金明细", len(cards))
+	}
 	if cardID != "" {
 		message = "本卡交易明细已同步"
 	}
@@ -191,6 +197,18 @@ func (s *Server) syncNexovccCardLedgerLocked(ctx context.Context, id string, fun
 	}
 	if fundsOnly {
 		return s.store.SaveNexovccFinance(nexovcc.MergeCardFunds(previous, fresh, card.Serial))
+	}
+	// Preserve legacy timestamps for cards excluded from this manual refresh.
+	// Updating the aggregate timestamp must not mark other cards as refreshed.
+	if previous.CardAt == nil && !previous.At.IsZero() {
+		cards, err := s.store.NexovccCards()
+		if err != nil {
+			return err
+		}
+		previous.CardAt = map[string]time.Time{}
+		for _, other := range cards {
+			previous.CardAt[other.Serial] = previous.At
+		}
 	}
 	return s.store.SaveNexovccFinance(nexovcc.MergeCardFinance(previous, fresh, card.Serial))
 }

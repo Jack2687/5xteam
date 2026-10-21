@@ -79,7 +79,7 @@ func (s *Server) getProAutomation(w http.ResponseWriter, r *http.Request) {
 	state.Error = progress.Errors[state.Stage]
 	restockRetryAvailable := false
 	if state.ID == "" && state.OrderID == "" && p.ProRestockTaskID != "" {
-		if task, e := s.store.ProRestockDispatchTask(p.ProRestockTaskID); e == nil && task.CardProvider == "nexovcc" && task.Status == "attention" {
+		if task, e := s.store.ProRestockTask(p.ProRestockTaskID); e == nil && ((task.CardProvider == "nexovcc" && task.Status == "attention") || task.StoppedAt != nil) {
 			restockRetryAvailable = true
 			state.Error = task.Message
 		}
@@ -375,7 +375,7 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 		}
 		if latest.ProRestockTaskID != "" && input.RetryCurrent {
 			if latest.ProAuto.ID == "" {
-				task, taskErr := s.store.ProRestockDispatchTask(latest.ProRestockTaskID)
+				task, taskErr := s.store.ProRestockTask(latest.ProRestockTaskID)
 				if taskErr != nil {
 					lock.Unlock()
 					writeAPI(w, 500, nil, "读取原补货任务失败")
@@ -471,8 +471,23 @@ func (s *Server) startProAutomation(w http.ResponseWriter, r *http.Request) {
 	if err == nil && (p.ProAuto.StopVersion != stopVersion || (p.ProAuto.StopRequested && (automatic || !wasStopped))) {
 		err = errors.New("用户已停止该账号流程，本次启动已取消；已发出的开卡请求请在卡片记录中核对")
 	}
+	// An explicit continuation after stopping one restock is new manual work.
+	// Keep the cancelled intent for audit, but expose the resumed workflow to
+	// the monitor as external in-flight work until it is delivered.
+	detachStopped := false
+	if err == nil && !automatic && p.ProRestockTaskID != "" {
+		task, readErr := s.store.ProRestockTask(p.ProRestockTaskID)
+		if readErr != nil {
+			err = readErr
+		} else {
+			detachStopped = task.StoppedAt != nil
+		}
+	}
 	if err == nil {
 		p, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
+			if detachStopped {
+				p.ProRestockTaskID = ""
+			}
 			if !resume && !paidRecovery {
 				if p.ProPushStartedAt == nil && p.ProAuto.ID == "" {
 					p.CaptureProPushTimeout(pro)

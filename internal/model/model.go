@@ -32,6 +32,7 @@ type MailAccountProfile struct {
 	ProPushTimeoutEnabled      *bool                       `json:"pro_push_timeout_enabled,omitempty"`
 	ProPushTimeoutMinutes      int                         `json:"pro_push_timeout_minutes,omitempty"`
 	ProPushDownstream          *ProDownstreamRef           `json:"pro_push_downstream,omitempty"`
+	ProPushEndedAt             *time.Time                  `json:"pro_push_ended_at,omitempty"`
 	ProPushStartedAt           *time.Time                  `json:"pro_push_started_at,omitempty"`
 	ProForceMergeNextAt        *time.Time                  `json:"pro_force_merge_next_at,omitempty"`
 	ProForceMergeAttempts      int                         `json:"pro_force_merge_attempts,omitempty"`

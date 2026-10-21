@@ -26,6 +26,7 @@ type proAccountListItem struct {
 	FinancialCases     []proFinancialCase `json:"financial_cases"`
 	PushElapsedMinutes int64              `json:"push_elapsed_minutes"`
 	ForceMergeDeadline *time.Time         `json:"force_merge_deadline,omitempty"`
+	StateEnteredAt     *time.Time         `json:"state_entered_at,omitempty"`
 	model.MailAccountProfile
 	ActivationCard       *store.ProActivationCard `json:"activation_card,omitempty"`
 	StageProgress        model.ProStageDisplay    `json:"pro_stage_progress"`
@@ -80,7 +81,15 @@ func (s *Server) proAccountListWithCards(items []model.MailAccountProfile) ([]pr
 			row.FinancialCases = []proFinancialCase{}
 		}
 		if item.ProPushStartedAt != nil {
-			row.PushElapsedMinutes = max(0, int64(time.Since(*item.ProPushStartedAt)/time.Minute))
+			end := time.Now()
+			if stopped := item.ProPushEndTime(); stopped != nil {
+				end = *stopped
+				row.ProPushEndedAt = stopped
+			}
+			row.PushElapsedMinutes = max(0, int64(end.Sub(*item.ProPushStartedAt)/time.Minute))
+			if row.ProPushEndedAt == nil && (item.SpaceMergedOnce || item.DeletionSubmitted()) {
+				row.PushElapsedMinutes = -1 // historical stopping time was not recorded
+			}
 			row.ForceMergeDeadline = item.ProPushDeadline()
 		}
 		row.ProAuto.Error = row.ProAuto.DisplayError()
@@ -105,10 +114,17 @@ func (s *Server) listProAccounts(w http.ResponseWriter, r *http.Request) {
 			writeAPI(w, http.StatusInternalServerError, nil, "读取 Pro 账号失败: "+err.Error())
 			return
 		}
-		rows, err := s.proAccountListWithCards(items)
+		profiles := make([]model.MailAccountProfile, len(items))
+		for i, item := range items {
+			profiles[i] = item.MailAccountProfile
+		}
+		rows, err := s.proAccountListWithCards(profiles)
 		if err != nil {
 			writeAPI(w, 500, nil, "读取开通银行卡失败")
 			return
+		}
+		for i := range rows {
+			rows[i].StateEnteredAt = items[i].StateEnteredAt
 		}
 		writeAPI(w, http.StatusOK, paginatedData(rows, total, page, map[string]any{"summary": summary}), "")
 		return
