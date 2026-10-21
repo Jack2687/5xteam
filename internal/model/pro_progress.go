@@ -29,6 +29,11 @@ func (p MailAccountProfile) ApplyProStageOverrides(v *ProStageDisplay) {
 		if edit.UpdatedAt.Before(p.ProAuto.StartedAt) {
 			continue
 		}
+		// A later deletion check or manual confirmation supersedes the display
+		// annotation; it must never mask a fresh execution result.
+		if stage == "deactivate" && p.ProDeactivation != nil && p.ProDeactivation.UpdatedAt.After(edit.UpdatedAt) {
+			continue
+		}
 		if v.Manual == nil {
 			v.Manual = map[string]bool{}
 		}
@@ -216,7 +221,6 @@ func (p MailAccountProfile) ProStages() ProStageDisplay {
 			v.Errors["merge"] = p.VM2.Error
 		}
 	}
-	p.ApplyProStageOverrides(&v)
 	if d := p.ProDeactivation; d != nil {
 		status := d.Status
 		if d.SubmittedAt != nil && d.ConfirmedAt == nil {
@@ -241,6 +245,7 @@ func (p MailAccountProfile) ProStages() ProStageDisplay {
 			v.Errors["deactivate"] = d.Error
 		}
 	}
+	p.ApplyProStageOverrides(&v)
 	return v
 }
 

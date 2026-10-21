@@ -97,8 +97,9 @@ async function saveAutoStage(account, step) {
   if (autoStageBusy(account)) return
   const expected=phaseState(account).steps[step.key]||''
   if (expected===step.status) return
-  const labels={not_started:'未开始',pending:'待处理',completed:'已完成',failed:'失败',skipped:'已跳过',interrupted:'已中断',unknown:'待确认',waiting:'等待额度'}
-  if (!window.confirm(`将 ${account.email} 的${step.label}标记为“${labels[step.status]}”？仅修正阶段记录，后台仍按实际订单和执行结果运行；再次执行此步骤会更新状态。`)) return
+  const labels={not_started:'未开始',pending:'待处理',completed:'已完成',failed:'失败',skipped:'已跳过',interrupted:'已中断',unknown:'待确认',waiting:step.key==='deactivate'?'等待确认':'等待额度'}
+  const effect=step.key==='deactivate'?'仅修正全自动删除阶段的显示，删除结果核验仍按原规则执行。确认账号已删除并停止核验，请使用右侧删除账户状态的「确认→成功」。':'仅修正阶段记录，后台仍按实际订单和执行结果运行；再次执行此步骤会更新状态。'
+  if (!window.confirm(`将 ${account.email} 的${step.label}标记为“${labels[step.status]}”？${effect}`)) return
   busy.value='auto-stage:'+account.email
   try {
     await api(`/api/pro-accounts/${encodeURIComponent(account.email)}/auto-stage`,{method:'PUT',body:{stage:step.key,status:step.status,expected_status:expected,expected_updated_at:account.updated_at}})
