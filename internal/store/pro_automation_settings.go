@@ -58,6 +58,9 @@ func (s *Store) SaveProAutomationSettings(input model.ProSettings, pay gptpay.Se
 	v.RetryCount, v.RetryIntervalSeconds, v.Concurrency = input.RetryCount, input.RetryIntervalSeconds, input.Concurrency
 	v.MergeConcurrency = input.MergeConcurrency
 	normalizeProSettings(&v)
+	if err = syncProPushTimeoutTx(tx, v); err != nil {
+		return v, pay, err
+	}
 	v.NextQuotaSweepAt = nil
 	if v.QuotaEnabled {
 		next := time.Now().Add(time.Duration(v.QuotaCheckIntervalSeconds) * time.Second)

@@ -149,6 +149,9 @@ func (s *Store) SaveProSettings(v model.ProSettings, subPassword, cpaKey string,
 		return v, err
 	}
 	defer tx.Rollback()
+	if err = syncProPushTimeoutTx(tx, v); err != nil {
+		return v, err
+	}
 	if _, err = tx.Exec("INSERT INTO pro_vm2api_secret(id,encrypted_key) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET encrypted_key=excluded.encrypted_key", vmKey); err != nil {
 		return v, err
 	}
