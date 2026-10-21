@@ -46,7 +46,6 @@ func (s *Server) syncNexovccFinanceScopeLocked(ctx context.Context, cardID strin
 	if err != nil {
 		return err
 	}
-	legacyAccount := f.CardAt == nil && !f.At.IsZero()
 	if f.CardAt == nil {
 		f.CardAt = map[string]time.Time{}
 		for _, card := range cards {
@@ -70,25 +69,16 @@ func (s *Server) syncNexovccFinanceScopeLocked(ctx context.Context, cardID strin
 	// a long scan; already completed cards must not starve the remaining ones.
 	sort.SliceStable(cards, func(i, j int) bool { return f.CardAt[cards[i].Serial].Before(f.CardAt[cards[j].Serial]) })
 	var failures []error
-	if account && (forceAccount || time.Since(f.AccountAt) >= max(30*time.Minute, time.Duration(cfg.PageRefreshSeconds)*time.Second)) {
-		since := f.AccountAt
-		if since.IsZero() && legacyAccount {
-			since = f.At
+	if account && (forceAccount || time.Since(f.AccountAt) >= time.Duration(cfg.WithSyncDefaults().AccountSyncSeconds)*time.Second) {
+		cardAt := f.CardAt
+		if e := s.syncNexovccAccountLocked(ctx); e != nil {
+			return e
 		}
-		if !since.IsZero() {
-			since = since.Add(-72 * time.Hour).Truncate(time.Second)
+		if err = s.store.NexovccCached("finance", &f); err != nil {
+			return err
 		}
-		s.nexovccProgress("更新近期充值记录与每日汇总", 0, len(cards)+1)
-		fresh, e := c.ReadAccountSummary(ctx, since)
-		if e == nil {
-			f = nexovcc.MergeAccountSummary(f, fresh, since)
-			e = s.store.SaveNexovccFinance(f)
-		}
-		if e != nil {
-			if nexovcc.RetryableHTTPStatus(e) != 0 {
-				return e
-			}
-			failures = append(failures, e)
+		if f.CardAt == nil {
+			f.CardAt = cardAt
 		}
 	}
 	for i, card := range cards {
@@ -148,6 +138,31 @@ func (s *Server) syncNexovccFinanceScopeLocked(ctx context.Context, cardID strin
 	}
 	s.nexovccProgress(message, len(cards), len(cards))
 	return nil
+}
+
+// Main-account records have their own cadence and never scan card ledgers.
+func (s *Server) syncNexovccAccountLocked(ctx context.Context) error {
+	c, _, err := s.nexovccClientLocked()
+	if err != nil {
+		return err
+	}
+	var f nexovcc.Finance
+	if err = s.store.NexovccCached("finance", &f); err != nil {
+		return err
+	}
+	since := f.AccountAt
+	if since.IsZero() && f.CardAt == nil {
+		since = f.At
+	}
+	if !since.IsZero() {
+		since = since.Add(-72 * time.Hour).Truncate(time.Second)
+	}
+	s.nexovccProgress("更新近期充值记录与每日汇总", 0, 1)
+	fresh, err := c.ReadAccountSummary(ctx, since)
+	if err != nil {
+		return err
+	}
+	return s.store.SaveNexovccFinance(nexovcc.MergeAccountSummary(f, fresh, since))
 }
 
 func (s *Server) nexovccFinanceNumberLocked(card nexovcc.Card) (string, error) {
@@ -396,6 +411,9 @@ func (s *Server) startNexovccMonitor() {
 			if !pending {
 				continue
 			}
+			if cfg.AutoWithdrawEnabled {
+				_, _ = s.runNexovccWithdrawCheck(ctx)
+			}
 			if !s.nexovcc.mu.TryLock() {
 				continue
 			}
@@ -413,7 +431,7 @@ func (s *Server) startNexovccMonitor() {
 			s.nexovcc.job = nexovccJob{ID: jobID, Status: "running", Message: "自动同步回款与资金流水", Total: 4}
 			s.nexovcc.jobMu.Unlock()
 			workCtx, stop := context.WithTimeout(ctx, 10*time.Minute)
-			err = s.syncNexovccLocked(workCtx)
+			err = s.syncNexovccLocked(nexovccScheduledSync(workCtx))
 			// Financial reads do not own Pro admission. Acquire both locks in the
 			// established order only for automatic card mutations.
 			s.nexovcc.mu.Unlock()

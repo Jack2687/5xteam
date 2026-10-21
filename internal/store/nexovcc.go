@@ -40,7 +40,7 @@ func (s *Store) nexovccSettingsLocked() (nexovcc.Settings, nexovcc.Credentials, 
 	var raw, sealed string
 	e := s.db.QueryRow(`SELECT profile,secret FROM nexovcc_settings WHERE id=1`).Scan(&raw, &sealed)
 	if errors.Is(e, sql.ErrNoRows) {
-		return cfg, cred, nil
+		return cfg.WithSyncDefaults(), cred, nil
 	}
 	if e != nil {
 		return cfg, cred, e
@@ -48,6 +48,7 @@ func (s *Store) nexovccSettingsLocked() (nexovcc.Settings, nexovcc.Credentials, 
 	if e = json.Unmarshal([]byte(raw), &cfg); e != nil {
 		return cfg, cred, e
 	}
+	cfg = cfg.WithSyncDefaults()
 	for i := range cfg.Templates {
 		cfg.Templates[i].ProductIDs = cfg.Templates[i].OrderedProductIDs()
 	}

@@ -33,8 +33,8 @@ func nexovccAutoWithdrawID(card nexovcc.Card, f nexovcc.Finance) string {
 }
 
 // Runs on its own persisted schedule with both Pro admission and issuer mutexes
-// held. Select from verified local records, then recheck live balance and
-// admission before submitting. Withdrawal-only never freezes or deletes a card.
+// held. Select structural candidates locally, refresh stale same-card evidence,
+// then recheck live balance and admission before submitting. Withdrawal-only never freezes or deletes a card.
 func (s *Server) autoWithdrawNexovccLocked(ctx context.Context) error {
 	cfg, _, err := s.store.NexovccSettings()
 	if err != nil || !cfg.Enabled || !cfg.AutoWithdrawEnabled {
@@ -71,8 +71,7 @@ func (s *Server) autoWithdrawNexovccLocked(ctx context.Context) error {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		amount, e := nexovcc.Cents(card.Balance)
-		if e != nil || amount <= 100 || card.Status == "4" || !card.Imported || card.Error != "" || !nexovccCardUsed(card, cases, groups) {
+		if card.Status != "1" || card.Control == "frozen" || !card.Imported || !nexovccCardUsed(card, cases, groups) {
 			continue
 		}
 		local, _, e := s.store.GPTPayCard(card.ID)
@@ -90,6 +89,48 @@ func (s *Server) autoWithdrawNexovccLocked(ctx context.Context) error {
 		}
 		if withdrawn {
 			continue // Late refund rows cannot withdraw the same recovered funds again.
+		}
+		// Category is only a display label: scheduled withdrawals still obey the
+		// original eligibility rules, even for manually classified pending cards.
+		// A recent successful ordinary sync can supply this evidence too.
+		freshAfter := time.Now().Add(-time.Duration(max(cfg.AutoWithdrawIntervalSeconds, 30)) * time.Second)
+		s.nexovccProgress("自动提现检查 · 更新尾号 "+card.Last4+" 余额与流水", 0, 3)
+		if card.BalanceAt.Before(freshAfter) || card.Error != "" {
+			card, e = s.refreshNexovccBalanceLocked(ctx, card.ID)
+			if e != nil {
+				return fmt.Errorf("提现前更新尾号 %s 余额：%w", card.Last4, e)
+			}
+		}
+		amount, e := nexovcc.Cents(card.Balance)
+		if e != nil || amount <= 100 || card.Status != "1" || card.Error != "" {
+			continue
+		}
+		at := finance.CardAt[card.Serial]
+		if finance.CardAt == nil {
+			at = finance.At
+		}
+		if at.Before(freshAfter) {
+			if e = s.syncNexovccCardFinanceLocked(ctx, card.ID); e != nil {
+				return fmt.Errorf("提现前更新尾号 %s 流水：%w", card.Last4, e)
+			}
+			if e = s.store.NexovccCached("finance", &finance); e != nil {
+				return e
+			}
+			cases, e = s.store.NexovccCases()
+			if e != nil {
+				return e
+			}
+			groups, e = s.store.NexovccTradeGroups(finance)
+			if e != nil {
+				return e
+			}
+		}
+		local, _, e = s.store.GPTPayCard(card.ID)
+		if e != nil {
+			return e
+		}
+		if local.IssuerLocked || local.PendingAccounts > 0 || local.AccountLimit < 1 || local.OpenedAccounts < local.AccountLimit {
+			continue
 		}
 		if local.ActiveAccounts > 0 || !nexovccRecycleCandidate(card, cases, groups) {
 			evidence, err := s.store.NexovccBalanceWithdrawal(card.ID)

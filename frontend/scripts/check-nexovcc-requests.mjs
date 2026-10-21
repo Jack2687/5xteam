@@ -107,3 +107,9 @@ context.view.filter.value='normal'
 await context.view.syncCategoryTransactions()
 assert.equal(requests.filter(r=>r.url==='/api/nexovcc/run').at(-1).body.card_category,'normal')
 console.log('Passed: pending refresh and transaction buttons send isolated category actions')
+
+for(const [key,value] of Object.entries({balance_sync_seconds:60,card_sync_seconds:180,transaction_sync_seconds:300,account_sync_seconds:1800,product_sync_seconds:7200}))cfg[key]=value
+await save()
+payload=requests.filter(r=>r.url==='/api/nexovcc/settings').at(-1).body
+for(const key of ['balance_sync_seconds','card_sync_seconds','transaction_sync_seconds','account_sync_seconds','product_sync_seconds'])assert.equal(payload[key],cfg[key])
+console.log('Passed: five independent sync intervals round-trip through settings save')

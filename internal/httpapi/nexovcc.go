@@ -365,7 +365,10 @@ func (s *Server) runNexovcc(w http.ResponseWriter, r *http.Request) {
 		var e error
 		switch in.Action {
 		case "sync":
-			e = s.syncNexovccLocked(ctx)
+			if in.AutomaticRefresh {
+				ctx = nexovccScheduledSync(ctx)
+			}
+			e = s.syncNexovccLocked(ctx, !in.AutomaticRefresh)
 		case "finance", "card_finance", "pending_sync":
 			readCtx, finish := s.nexovccReadContext(ctx)
 			if in.Action == "pending_sync" {
@@ -449,16 +452,73 @@ func (s *Server) fetchNexovccLocked(parent context.Context, forceAccount ...bool
 			}
 		}
 	}
-	c, _, e := s.nexovccClientLocked()
+	scheduled, _ := ctx.Value(nexovccScheduledSyncKey{}).(bool)
+	force := len(forceAccount) > 0 && forceAccount[0]
+	parts := []struct {
+		key   string
+		force bool
+		run   func(context.Context) error
+	}{
+		{"balance", !scheduled, s.nexovccBalanceLocked},
+		{"cards", !scheduled, s.syncNexovccCardsLocked},
+		{"transactions", !scheduled, func(ctx context.Context) error { return s.syncNexovccTransactionsLocked(ctx, "") }},
+		{"account", force, s.syncNexovccAccountLocked},
+		{"products", force, func(ctx context.Context) error { _, err := s.syncNexovccProductsLocked(ctx); return err }},
+	}
+	for _, part := range parts {
+		if err = s.runNexovccSyncPartLocked(ctx, part.key, part.force, part.run); err != nil {
+			if (part.key == "transactions" || part.key == "account") && ctx.Err() == nil {
+				_ = s.store.NexovccCache("finance_error", err.Error())
+			}
+			return err
+		}
+	}
+	cfg, _, err := s.store.NexovccSettings()
+	if err != nil {
+		return err
+	}
+	currentParts, err := s.nexovccSyncParts(cfg)
+	if err != nil {
+		return err
+	}
+	if err = s.store.NexovccCache("finance_error", firstNonEmpty(currentParts["transactions"].Error, currentParts["account"].Error)); err != nil {
+		return err
+	}
+	// Only the query phase may yield. Do not expose a cancellation handle while
+	// advancing a previously submitted withdrawal/freeze/delete pipeline.
+	if finishRead() {
+		if parent.Err() != nil {
+			return parent.Err()
+		}
+		return errNexovccReadYielded
+	}
+	ctx = parent
+	// Reconcile submitted steps without replaying them. Explicitly requested
+	// close pipelines may advance to their next unsent step after confirmation.
+	ops, e := s.store.NexovccOperations()
 	if e != nil {
 		return e
 	}
-	s.nexovccProgress("查询账户余额", 0, 3)
-	if e = s.nexovccBalanceLocked(ctx); e != nil {
-		return e
+	for _, op := range ops {
+		if !op.Terminal() && op.Serial != "" {
+			card, readErr := s.store.NexovccCard(nexovcc.CardID(op.Serial))
+			if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+				return readErr
+			}
+			if card.NormalPending {
+				continue
+			}
+			op = s.verifyNexovccOperationLocked(ctx, op)
+			if e = s.store.SaveNexovccOperation(op); e != nil {
+				return e
+			}
+		}
 	}
-	s.nexovccProgress("同步产品 / BIN", 1, 3)
-	if e = s.syncNexovccProductsIfDueLocked(ctx); e != nil {
+	return nil
+}
+func (s *Server) syncNexovccCardsLocked(ctx context.Context) error {
+	c, _, e := s.nexovccClientLocked()
+	if e != nil {
 		return e
 	}
 	s.nexovccProgress("分页同步卡片", 2, 3)
@@ -534,39 +594,7 @@ func (s *Server) fetchNexovccLocked(parent context.Context, forceAccount ...bool
 			}
 		}
 	}
-	if e = s.syncNexovccFinanceLocked(ctx, forceAccount...); e != nil {
-		return fmt.Errorf("卡片已同步，财务同步未完成：%w", e)
-	}
-	// Only the query phase may yield. Do not expose a cancellation handle while
-	// advancing a previously submitted withdrawal/freeze/delete pipeline.
-	if finishRead() {
-		if parent.Err() != nil {
-			return parent.Err()
-		}
-		return errNexovccReadYielded
-	}
-	ctx = parent
-	// Reconcile submitted steps without replaying them. Explicitly requested
-	// close pipelines may advance to their next unsent step after confirmation.
-	ops, e := s.store.NexovccOperations()
-	if e != nil {
-		return e
-	}
-	for _, op := range ops {
-		if !op.Terminal() && op.Serial != "" {
-			card, readErr := s.store.NexovccCard(nexovcc.CardID(op.Serial))
-			if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
-				return readErr
-			}
-			if card.NormalPending {
-				continue
-			}
-			op = s.verifyNexovccOperationLocked(ctx, op)
-			if e = s.store.SaveNexovccOperation(op); e != nil {
-				return e
-			}
-		}
-	}
+
 	if failures > 0 {
 		return fmt.Errorf("%d 张卡余额或资料同步失败，请稍后重新同步", failures)
 	}

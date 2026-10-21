@@ -26,6 +26,11 @@ type Settings struct {
 	DefaultMaxAccounts          int        `json:"default_max_accounts"`
 	SingleActiveAccount         bool       `json:"single_active_account"`
 	PageRefreshSeconds          int        `json:"page_refresh_seconds"`
+	BalanceSyncSeconds          int        `json:"balance_sync_seconds"`
+	CardSyncSeconds             int        `json:"card_sync_seconds"`
+	TransactionSyncSeconds      int        `json:"transaction_sync_seconds"`
+	AccountSyncSeconds          int        `json:"account_sync_seconds"`
+	ProductSyncSeconds          int        `json:"product_sync_seconds"`
 	PageAutoRefresh             bool       `json:"page_auto_refresh"`
 	HTTP522RetrySeconds         int        `json:"http_522_retry_seconds"` // Shared by HTTP 500/522; preserve saved keys.
 	HTTP522Retries              int        `json:"http_522_retries"`
@@ -138,6 +143,18 @@ func Cents(s string) (int64, error) {
 }
 func Money(n int64) string { return fmt.Sprintf("%d.%02d", n/100, n%100) }
 func Normalize(s Settings) (Settings, error) {
+	s = s.WithSyncDefaults()
+	for _, item := range []struct {
+		name    string
+		seconds int
+	}{
+		{"主账户余额", s.BalanceSyncSeconds}, {"卡片资料与余额", s.CardSyncSeconds},
+		{"卡片交易与资金流水", s.TransactionSyncSeconds}, {"充值记录与每日汇总", s.AccountSyncSeconds}, {"产品与 BIN", s.ProductSyncSeconds},
+	} {
+		if item.seconds < 60 || item.seconds > 86400 {
+			return s, fmt.Errorf("%s同步间隔须为 60～86400 秒", item.name)
+		}
+	}
 	if s.HTTP522RetrySeconds == 0 {
 		s.HTTP522RetrySeconds = 5
 	}
@@ -247,4 +264,25 @@ func (t Template) SelectProduct(products []Product) (Product, error) {
 func CardID(serial string) string {
 	h := sha256.Sum256([]byte(serial))
 	return fmt.Sprintf("nex-%x", h[:16])
+}
+
+// Zero values migrate old installations without changing their saved cadence.
+func (s Settings) WithSyncDefaults() Settings {
+	legacy := max(s.PageRefreshSeconds, 60)
+	if s.BalanceSyncSeconds == 0 {
+		s.BalanceSyncSeconds = legacy
+	}
+	if s.CardSyncSeconds == 0 {
+		s.CardSyncSeconds = legacy
+	}
+	if s.TransactionSyncSeconds == 0 {
+		s.TransactionSyncSeconds = legacy
+	}
+	if s.AccountSyncSeconds == 0 {
+		s.AccountSyncSeconds = max(1800, legacy)
+	}
+	if s.ProductSyncSeconds == 0 {
+		s.ProductSyncSeconds = 1800
+	}
+	return s
 }
