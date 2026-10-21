@@ -81,6 +81,7 @@ type ProSettings struct {
 	QuotaUsedThreshold        float64             `json:"quota_used_threshold"`
 	QuotaCheckIntervalSeconds int                 `json:"quota_check_interval_seconds"`
 	AutoMergeEnabled          bool                `json:"auto_merge_enabled"`
+	AutoDeleteEnabled         bool                `json:"auto_delete_enabled"`
 	TargetAdminID             string              `json:"target_admin_id,omitempty"`
 	TargetSeatType            string              `json:"target_seat_type"`
 	RetryCount                int                 `json:"retry_count"`

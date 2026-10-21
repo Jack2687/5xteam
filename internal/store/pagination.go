@@ -57,6 +57,7 @@ type ProAccountsPageSummary struct {
 	OAuthReady int `json:"oauth_ready"`
 	Pushed     int `json:"pushed"`
 	Merged     int `json:"merged"`
+	Deleted    int `json:"deleted"`
 	Unmerged   int `json:"unmerged"`
 	InProgress int `json:"in_progress"`
 }
@@ -433,8 +434,8 @@ func (s *Store) ProAccountsPage(query, mergeState string, limit, offset int) ([]
 	if err := s.db.QueryRow(cte+` SELECT COUNT(*),
 		COALESCE(SUM(json_extract(profile,'$.access_token_present')=1 AND json_extract(profile,'$.refresh_token_present')=1),0),
 		COALESCE(SUM(json_extract(profile,'$.push_status')='completed'),0), COALESCE(SUM(merge_state='merged'),0),
-		COALESCE(SUM(merge_state='unmerged'),0), COALESCE(SUM(merge_state='in_progress'),0) FROM accounts`).Scan(
-		&summary.All, &summary.OAuthReady, &summary.Pushed, &summary.Merged, &summary.Unmerged, &summary.InProgress); err != nil {
+  COALESCE(SUM(merge_state='unmerged'),0), COALESCE(SUM(merge_state='in_progress'),0), COALESCE(SUM(merge_state='deleted'),0) FROM accounts`).Scan(
+		&summary.All, &summary.OAuthReady, &summary.Pushed, &summary.Merged, &summary.Unmerged, &summary.InProgress, &summary.Deleted); err != nil {
 		return nil, 0, summary, err
 	}
 	like := "%" + query + "%"

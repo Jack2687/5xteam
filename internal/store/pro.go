@@ -106,6 +106,9 @@ func (s *Store) ProSettings() (model.ProSettings, string, string, error) {
 }
 
 func (s *Store) SaveProSettings(v model.ProSettings, subPassword, cpaKey string, vmKeys ...string) (model.ProSettings, error) {
+	if err := v.ValidateDisposition(); err != nil {
+		return v, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	normalizeProSettings(&v)
@@ -215,6 +218,7 @@ func (s *Store) UpdateProAccount(email string, mutate func(*model.MailAccountPro
 	}
 	wasConfirmed := p.TransferStatus == "completed" && p.ProMergeConfirmedSource != ""
 	wasRemoved := p.RemoveStatus == "completed" || p.RemoveStatus == "team_removed"
+	wasDeleted := p.DeletionAccepted()
 	previousProvider, previousSub2ID := p.PushProvider, p.Sub2AccountID
 	previousPushStatus := p.PushStatus
 	if mutate != nil {
@@ -228,7 +232,11 @@ func (s *Store) UpdateProAccount(email string, mutate func(*model.MailAccountPro
 		p.ClearProCostSnapshot()
 	}
 	p.UpdatedAt = time.Now()
-	p.ReconcileProAutoMerge(p.UpdatedAt)
+	if p.DeletionSubmitted() {
+		p.ReconcileProAutoDeletion(p.UpdatedAt)
+	} else {
+		p.ReconcileProAutoMerge(p.UpdatedAt)
+	}
 	p.ReconcileProQualityMerge()
 	encoded, err := json.Marshal(p)
 	if err != nil {
@@ -248,7 +256,7 @@ func (s *Store) UpdateProAccount(email string, mutate func(*model.MailAccountPro
 	if err = s.recordNexovccRevenueTx(tx, p); err != nil {
 		return p, err
 	}
-	if !wasRemoved && (p.RemoveStatus == "completed" || p.RemoveStatus == "team_removed") {
+	if (!wasRemoved && (p.RemoveStatus == "completed" || p.RemoveStatus == "team_removed")) || (!wasDeleted && p.DeletionAccepted()) {
 		if err = releaseProCardOrdersTx(tx, email, formatTime(p.UpdatedAt)); err != nil {
 			return p, err
 		}
@@ -259,6 +267,11 @@ func (s *Store) UpdateProAccount(email string, mutate func(*model.MailAccountPro
 			at = *p.SpaceMergedAt
 		}
 		if err = ejhMarkRequestedTx(tx, p.Email, p.ProAuto.OrderID, p.ProMergeConfirmedSource, at); err != nil {
+			return p, err
+		}
+	}
+	if !wasDeleted && p.DeletionAccepted() {
+		if err = ejhMarkRequestedTx(tx, p.Email, p.ProAuto.OrderID, "account_deactivation", *p.ProDeactivation.AcceptedAt); err != nil {
 			return p, err
 		}
 	}
@@ -288,13 +301,29 @@ func (s *Store) RecoverProWorkflows() error {
 		}
 		legacyCancelled := p.TransferStatus == "failed" && (strings.Contains(p.ProLastError, "context canceled") || strings.Contains(p.ProLastError, "context deadline exceeded"))
 		groupsRunning := p.ProPostMergeGroups != nil && p.ProPostMergeGroups.Status == "running"
-		if !p.ProWorkflowRunning && !legacyCancelled && !groupsRunning {
+		deletionNeedsRecovery := p.ProDeactivation != nil && (p.ProDeactivation.Status == "running" || p.DeletionSubmitted() && p.ProDeactivation.NextCheckAt == nil && (!p.DeletionConfirmed() || p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending()))
+		if !p.ProWorkflowRunning && !legacyCancelled && !groupsRunning && !deletionNeedsRecovery {
 			continue
 		}
 		if legacyCancelled {
 			p.TransferStatus = "unknown"
 		}
 		p.ProWorkflowRunning = false
+		if d := p.ProDeactivation; d != nil && d.Status == "running" {
+			d.Status = "interrupted"
+			if d.SubmittedAt != nil {
+				d.Status = "unknown"
+			}
+			if d.AcceptedAt != nil {
+				d.Status = "queued"
+			}
+			d.Error = "服务重启，可续跑核验；已提交的删除不会重复发送"
+			d.UpdatedAt = time.Now()
+		}
+		if d := p.ProDeactivation; d != nil && d.SubmittedAt != nil && (!p.DeletionConfirmed() || p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending()) {
+			next := time.Now().Add(5 * time.Minute)
+			d.NextCheckAt = &next
+		}
 		if groupsRunning {
 			p.ProPostMergeGroups.Status = "pending"
 			p.ProPostMergeGroups.UpdatedAt = time.Now()

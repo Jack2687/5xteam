@@ -41,7 +41,7 @@ func (p MailAccountProfile) ApplyProStageOverrides(v *ProStageDisplay) {
 // OAuth/push results, never editable display overrides, to skip provisioning.
 func (p MailAccountProfile) CanResumeProQuota() bool {
 	a := p.ProAuto
-	if p.ManagementScope != "pro" || a.ID == "" || a.OrderID == "" || p.ProWorkflowRunning || p.SpaceMergedOnce ||
+	if p.ManagementScope != "pro" || p.DeletionSubmitted() || a.ID == "" || a.OrderID == "" || p.ProWorkflowRunning || p.SpaceMergedOnce ||
 		(p.ProMigration != nil && p.ProMigration.Paused) ||
 		p.TransferStatus != "" && p.TransferStatus != "not_started" || p.RemoveStatus == "completed" || p.RemoveStatus == "team_removed" ||
 		p.ChatGPTStatus == "dead" || p.OAuthStatus != "completed" || !p.AccessTokenPresent || !p.RefreshTokenPresent ||
@@ -77,7 +77,7 @@ func (p MailAccountProfile) CanResumeProQuota() bool {
 // automation, replay payment, resume stopped/import-paused work or repeat merge.
 func (p *MailAccountProfile) ReconcileProAutoManual(now time.Time) bool {
 	a := &p.ProAuto
-	if p.ManagementScope != "pro" || a.ID == "" || a.StopRequested || p.ProWorkflowRunning || p.SpaceMergedOnce || p.TransferStatus == "completed" ||
+	if p.ManagementScope != "pro" || p.DeletionSubmitted() || a.ID == "" || a.StopRequested || p.ProWorkflowRunning || p.SpaceMergedOnce || p.TransferStatus == "completed" ||
 		(p.ProMigration != nil && p.ProMigration.Paused) || (a.Status != "failed" && a.Status != "interrupted" && a.Status != "awaiting_push") ||
 		(a.Stage != "oauth" && a.Stage != "push") || a.Steps["recharge"] != "completed" ||
 		p.ChatGPTStatus == "dead" || p.OAuthStatus != "completed" || !p.AccessTokenPresent || !p.RefreshTokenPresent ||
@@ -129,6 +129,9 @@ func (p *MailAccountProfile) ReconcileProAutoMerge(now time.Time) bool {
 			p.ProAuto.UpdatedAt = now
 		}
 		return changed
+	}
+	if p.DeletionSubmitted() {
+		return p.ReconcileProAutoDeletion(now)
 	}
 	if p.ProAuto.ID == "" || p.TransferStatus != "completed" {
 		return false
@@ -214,6 +217,24 @@ func (p MailAccountProfile) ProStages() ProStageDisplay {
 		}
 	}
 	p.ApplyProStageOverrides(&v)
+	if d := p.ProDeactivation; d != nil {
+		status := d.Status
+		if d.SubmittedAt != nil && d.ConfirmedAt == nil {
+			status = "waiting"
+		}
+		if d.ConfirmedAt != nil && (p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending()) {
+			status = "waiting"
+		}
+		delete(v.Errors, "deactivate")
+		if d.Error != "" {
+			status = "failed"
+		}
+		v.Steps["deactivate"] = status
+		delete(v.Manual, "deactivate")
+		if d.Error != "" {
+			v.Errors["deactivate"] = d.Error
+		}
+	}
 	return v
 }
 

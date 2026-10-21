@@ -14,6 +14,9 @@ import (
 // Only automation fields are changed here. Downstream credentials and groups
 // may be edited separately, so never overwrite them from an automation form.
 func (s *Store) SaveProAutomationSettings(input model.ProSettings, pay gptpay.Settings, key string) (model.ProSettings, gptpay.Settings, error) {
+	if err := input.ValidateDisposition(); err != nil {
+		return input, pay, err
+	}
 	if err := input.ValidatePurchaseWindows(); err != nil {
 		return input, pay, err
 	}
@@ -40,6 +43,7 @@ func (s *Store) SaveProAutomationSettings(input model.ProSettings, pay gptpay.Se
 		}
 	}
 	v.QuotaEnabled, v.AutoMergeEnabled = input.QuotaEnabled, input.AutoMergeEnabled
+	v.AutoDeleteEnabled = input.AutoDeleteEnabled
 	v.CardProvider = input.AutoCardProvider()
 	v.PurchaseScheduleEnabled, v.PurchaseWindows = input.PurchaseScheduleEnabled, input.PurchaseWindows
 	v.EJHPlanTemplates, v.NexovccPlanTemplates = input.EJHPlanTemplates, input.NexovccPlanTemplates
