@@ -79,13 +79,23 @@ class DeactivateTests(unittest.TestCase):
             self.assertEqual(sum(x[0] == 'POST' for x in session.calls), 1)
             self.assertNotIn('rejected', self.events)
 
-    def test_check_only_never_posts_and_401_is_not_confirmation(self):
-        for status, deactivated, expected in ((200, True, 'confirmed'), (200, False, 'pending'), (401, False, 'pending'), (403, False, 'pending')):
+    def test_check_only_never_posts_and_401_confirms_by_configured_rule(self):
+        for status, deactivated, expected in ((200, True, 'confirmed'), (200, False, 'pending'), (401, False, 'confirmed'), (403, False, 'pending'), (500, False, 'pending'), (522, False, 'pending')):
             session = Session(); session.account_status = status; session.deactivated = deactivated
-            self.assertEqual(self.perform(session, check_only=True, account_id='personal-1')['status'], expected)
+            result = self.perform(session, check_only=True, account_id='personal-1')
+            self.assertEqual(result['status'], expected)
+            if status == 401:
+                self.assertEqual(result['confirmation_source'], 'http_401')
             self.assertEqual(len(session.calls), 1)
             self.assertEqual(session.calls[0][1], BASE + ACCOUNTS)
             self.assertEqual(self.events, [])
+
+    def test_401_before_submission_or_without_identity_cannot_confirm(self):
+        session = Session(); session.account_status = 401
+        self.assertEqual(self.perform(session)['status'], 'need_login')
+        self.assertFalse(any(x[0] == 'POST' for x in session.calls))
+        session = Session(); session.account_status = 401
+        self.assertEqual(self.perform(session, check_only=True)['status'], 'pending')
 
     def test_checkpoint_failure_prevents_post(self):
         session = Session()

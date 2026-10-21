@@ -188,152 +188,160 @@ func (s *Server) performProDeactivation(ctx context.Context, email string) (out 
 	if p.DeletionConfirmed() {
 		return p, nil
 	}
-	// A grouping retry should not wait behind another remote confirmation read.
-	// The defer retries only downstream cleanup; the next tick checks deletion.
-	if p.DeletionAccepted() && (p.ProPostMergeGroupsPending() || p.ProVM2CleanupPending()) {
-		return p, nil
-	}
 	if !p.DeletionSubmitted() {
-		p, err = s.deletionUpdate(email, "credentials", "running", "准备账户删除凭据")
+		p, err = s.deletionUpdate(email, "credentials", "running", "删除前重新登录获取凭据")
 		if err != nil {
 			return p, err
 		}
 		s.queueNotification("merge_start", "Pro 触发删除账户", fmt.Sprintf("账号：%s\n消耗额度（标准）：%s\n用户费用（已用）：%s", email, notificationUSD(p.CostDownstreamSnapshot), notificationUSD(p.UserCostDownstreamSnapshot)))
-	}
-	for loginAttempt := 0; loginAttempt < 2; loginAttempt++ {
-		if err = ctx.Err(); err != nil {
-			return p, err
-		}
-		p, c, readErr := s.store.MailAccountCredential(email)
-		if readErr != nil {
-			return p, readErr
-		}
-		session := map[string]any{}
-		_ = json.Unmarshal([]byte(c.ChatGPTSession), &session)
-		accountID, userID := "", p.OAuthUserID
-		if d := p.ProDeactivation; d != nil {
-			accountID = d.AccountID
-			if d.UserID != "" {
-				userID = d.UserID
-			}
-		}
-		payload := map[string]any{"email": email, "access_token": c.AccessToken, "session": session, "proxy": s.store.Settings().ProxyURL, "check_only": p.DeletionSubmitted(), "account_id": accountID, "user_id": userID}
 		if strings.TrimSpace(s.store.Settings().ProxyURL) == "" {
 			return p, errors.New("删除账户需先配置全局代理")
 		}
-		result, protocolErr := s.runDeletionProtocol(ctx, payload, func(method string, args map[string]any) (any, error) {
-			if err := ctx.Err(); err != nil {
+		if err = s.loginForProDeletion(ctx, p); err != nil {
+			return p, err
+		}
+	}
+	if err = ctx.Err(); err != nil {
+		return p, err
+	}
+	p, c, readErr := s.store.MailAccountCredential(email)
+	if readErr != nil {
+		return p, readErr
+	}
+	session := map[string]any{}
+	_ = json.Unmarshal([]byte(c.ChatGPTSession), &session)
+	accountID, userID := "", p.OAuthUserID
+	if d := p.ProDeactivation; d != nil {
+		accountID = d.AccountID
+		if d.UserID != "" {
+			userID = d.UserID
+		}
+	}
+	payload := map[string]any{"email": email, "access_token": c.AccessToken, "session": session, "proxy": s.store.Settings().ProxyURL, "check_only": p.DeletionSubmitted(), "account_id": accountID, "user_id": userID}
+	if strings.TrimSpace(s.store.Settings().ProxyURL) == "" {
+		return p, errors.New("删除账户需先配置全局代理")
+	}
+	result, protocolErr := s.runDeletionProtocol(ctx, payload, func(method string, args map[string]any) (any, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		str := func(k string) string { v, _ := args[k].(string); return v }
+		switch method {
+		case "identity":
+			if str("account_id") == "" || str("user_id") == "" {
+				return nil, errors.New("缺少已验证的个人账户身份")
+			}
+			_, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
+				d := p.ProDeactivation
+				d.AccountID, d.UserID = str("account_id"), str("user_id")
+				d.Steps["credentials"] = "completed"
+				delete(d.Manual, "credentials")
+			})
+		case "stage":
+			_, err = s.deletionUpdate(email, "verify", "running", "执行删除专用验证")
+		case "submitting":
+			if err = s.checkProQualityMerge(ctx, p, true); err != nil {
 				return nil, err
 			}
-			str := func(k string) string { v, _ := args[k].(string); return v }
-			switch method {
-			case "identity":
-				if str("account_id") == "" || str("user_id") == "" {
-					return nil, errors.New("缺少已验证的个人账户身份")
-				}
-				_, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
-					d := p.ProDeactivation
-					d.AccountID, d.UserID = str("account_id"), str("user_id")
-					d.Steps["credentials"] = "completed"
-					delete(d.Manual, "credentials")
-				})
-			case "stage":
-				_, err = s.deletionUpdate(email, "verify", "running", "执行删除专用验证")
-			case "submitting":
-				if err = s.checkProQualityMerge(ctx, p, true); err != nil {
-					return nil, err
-				}
-				_, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
-					d := p.ProDeactivation
-					now := time.Now()
-					d.SubmittedAt = &now
-					d.Steps["verify"] = "completed"
-					delete(d.Manual, "verify")
-					delete(d.Manual, "submit")
-					d.Stage, d.Status, d.Steps["submit"] = "submit", "running", "running"
-				})
-			case "accepted":
-				_, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
-					d := p.ProDeactivation
-					now := time.Now()
-					d.AcceptedAt = &now
-					d.Status, d.Stage, d.Message = "queued", "confirm", "删除请求已受理，等待上游确认"
-					d.Steps["submit"], d.Steps["confirm"] = "completed", "waiting"
-					delete(d.Manual, "submit")
-					delete(d.Manual, "confirm")
-					if p.DailyMergeMatches() {
-						p.ProDailyMerge.Completed = true
-					}
-				})
-				if err == nil {
-					s.queueNotification("merge_result", "Pro 删除请求已受理", "账号："+email+"\n已提交删除，立即执行所选分组调整；退款仍以卡台流水为准")
-				}
-			case "rejected":
-				_, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
-					p.ProDeactivation.SubmittedAt = nil
-					p.ProDeactivation.Status = "failed"
-					p.ProDeactivation.Steps["submit"] = "failed"
-				})
-			default:
-				return nil, errors.New("未知删除流程事件")
-			}
-			return true, err
-		})
-		if protocolErr != nil {
-			return p, protocolErr
-		}
-		state, _ := result["status"].(string)
-		message, _ := result["message"].(string)
-		if state == "need_login" && !p.DeletionSubmitted() && loginAttempt == 0 {
-			_, err = s.deletionUpdate(email, "credentials", "running", "凭据缺失或失效，正在登录获取临时 AT")
-			if err != nil {
-				return p, err
-			}
-			var login map[string]any
-			if s.proDeleteHooks != nil && s.proDeleteHooks.Login != nil {
-				login, err = s.proDeleteHooks.Login(ctx, email)
-			} else {
-				login, err = s.executeOpenAILoginContext(ctx, email, "chatgpt_at", func(msg string) {
-					s.auditProEvent(p, "account_deactivation_login", "running", "", redactSensitiveText(msg), nil)
-				}, nil)
-			}
-			if err != nil {
-				return p, err
-			}
-			if login["success"] != true {
-				return p, errors.New(firstNonEmpty(oauthErrorText(login, nil), "删除账户登录失败"))
-			}
-			raw, e := json.Marshal(login)
-			if e != nil {
-				return p, e
-			}
-			if err = s.store.SaveProDeletionSession(email, string(raw)); err != nil {
-				return p, err
-			}
-			continue
-		}
-		if state == "queued" || state == "confirmed" || state == "pending" {
-			return s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
+			_, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
 				d := p.ProDeactivation
 				now := time.Now()
-				d.CheckedAt = &now
-				d.Message, d.Error = message, ""
-				if state == "confirmed" && d.SubmittedAt != nil {
-					d.ConfirmedAt = &now
-					d.ConfirmationSource = "upstream"
-					delete(d.Manual, "confirm")
-					d.Status, d.Stage, d.Steps["confirm"] = "completed", "confirm", "completed"
-					// Explicit state for the original account recovers a lost POST response.
-					if d.AcceptedAt == nil {
-						d.AcceptedAt = &now
-						d.Steps["submit"] = "completed"
-					}
+				d.SubmittedAt = &now
+				d.Steps["verify"] = "completed"
+				delete(d.Manual, "verify")
+				delete(d.Manual, "submit")
+				d.Stage, d.Status, d.Steps["submit"] = "submit", "running", "running"
+			})
+		case "accepted":
+			_, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
+				d := p.ProDeactivation
+				now := time.Now()
+				d.AcceptedAt = &now
+				d.Status, d.Stage, d.Message = "queued", "confirm", "删除请求已受理，等待上游确认"
+				d.Steps["submit"], d.Steps["confirm"] = "completed", "waiting"
+				delete(d.Manual, "submit")
+				delete(d.Manual, "confirm")
+				if p.DailyMergeMatches() {
+					p.ProDailyMerge.Completed = true
 				}
 			})
+			if err == nil {
+				s.queueNotification("merge_result", "Pro 删除请求已受理", "账号："+email+"\n已提交删除，立即执行所选分组调整；退款仍以卡台流水为准")
+			}
+		case "rejected":
+			_, err = s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
+				p.ProDeactivation.SubmittedAt = nil
+				p.ProDeactivation.Status = "failed"
+				p.ProDeactivation.Steps["submit"] = "failed"
+			})
+		default:
+			return nil, errors.New("未知删除流程事件")
 		}
-		return p, errors.New(firstNonEmpty(message, "删除流程未完成"))
+		return true, err
+	})
+	if protocolErr != nil {
+		return p, protocolErr
 	}
-	return p, errors.New("登录后仍未获得有效删除凭据")
+	state, _ := result["status"].(string)
+	message, _ := result["message"].(string)
+	if state == "need_login" {
+		return p, errors.New("重新登录后凭据仍无效，请重试删除流程")
+	}
+	if state == "queued" || state == "confirmed" || state == "pending" {
+		return s.store.UpdateProAccount(email, func(p *model.MailAccountProfile) {
+			d := p.ProDeactivation
+			now := time.Now()
+			d.CheckedAt = &now
+			d.Message, d.Error = message, ""
+			if state == "confirmed" && d.SubmittedAt != nil {
+				d.ConfirmedAt = &now
+				d.ConfirmationSource = "upstream"
+				if result["confirmation_source"] == "http_401" {
+					d.ConfirmationSource = "http_401"
+				}
+				delete(d.Manual, "confirm")
+				d.Status, d.Stage, d.Steps["confirm"] = "completed", "confirm", "completed"
+				// Explicit state for the original account recovers a lost POST response.
+				if d.AcceptedAt == nil {
+					d.AcceptedAt = &now
+					d.Steps["submit"] = "completed"
+				}
+			}
+		})
+	}
+	return p, errors.New(firstNonEmpty(message, "删除流程未完成"))
+}
+
+// Every new deletion attempt obtains a fresh web session. Confirmation and
+// downstream-only retries keep the submitted request and never log in again.
+func (s *Server) loginForProDeletion(ctx context.Context, p model.MailAccountProfile) error {
+	var login map[string]any
+	var err error
+	if s.proDeleteHooks != nil && s.proDeleteHooks.Login != nil {
+		login, err = s.proDeleteHooks.Login(ctx, p.Email)
+	} else {
+		login, err = s.executeOpenAILoginContext(ctx, p.Email, "chatgpt_at", func(msg string) {
+			s.auditProEvent(p, "account_deactivation_login", "running", "", redactSensitiveText(msg), nil)
+		}, nil)
+	}
+	if err != nil {
+		return err
+	}
+	if login["success"] != true {
+		return errors.New(firstNonEmpty(oauthErrorText(login, nil), "删除账户重新登录失败"))
+	}
+	token, _ := login["accessToken"].(string)
+	if strings.TrimSpace(token) == "" {
+		token, _ = login["access_token"].(string)
+	}
+	if strings.TrimSpace(token) == "" {
+		return errors.New("重新登录未返回有效 AT，未提交删除")
+	}
+	raw, err := json.Marshal(login)
+	if err != nil {
+		return err
+	}
+	return s.store.SaveProDeletionSession(p.Email, string(raw))
 }
 
 func (s *Server) tickProDeactivations(ctx context.Context) {

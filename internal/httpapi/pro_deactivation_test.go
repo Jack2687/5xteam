@@ -41,6 +41,10 @@ func deletionProtocolFixture(t *testing.T, posts *atomic.Int32, mode *string) fu
 	}
 }
 
+func deletionLoginFixture(context.Context, string) (map[string]any, error) {
+	return map[string]any{"success": true, "access_token": "fresh-deletion-at", "session_token": "fresh-deletion-cookie"}, nil
+}
+
 func enableDeletion(t *testing.T, f *proExecutionFixture) {
 	t.Helper()
 	f.s.stopProAutomations()
@@ -61,7 +65,7 @@ func TestProDeletionAcceptedGroupsAndNoReplay(t *testing.T) {
 			enableDeletion(t, f.proExecutionFixture)
 			var posts atomic.Int32
 			mode := "pending"
-			f.s.proDeleteHooks = &proDeactivationHooks{Protocol: deletionProtocolFixture(t, &posts, &mode)}
+			f.s.proDeleteHooks = &proDeactivationHooks{Login: deletionLoginFixture, Protocol: deletionProtocolFixture(t, &posts, &mode)}
 			f.fail.Store(failGroups)
 			p, err := f.s.performProDisposition(t.Context(), f.email)
 			if (err != nil) != failGroups || !p.DeletionAccepted() || p.DeletionConfirmed() || posts.Load() != 1 {
@@ -99,7 +103,7 @@ func TestProDeletionUnknownRestartAndRecovery(t *testing.T) {
 	enableDeletion(t, f.proExecutionFixture)
 	var posts atomic.Int32
 	mode := "unknown"
-	f.s.proDeleteHooks = &proDeactivationHooks{Protocol: deletionProtocolFixture(t, &posts, &mode)}
+	f.s.proDeleteHooks = &proDeactivationHooks{Login: deletionLoginFixture, Protocol: deletionProtocolFixture(t, &posts, &mode)}
 	p, err := f.s.performProDeactivation(t.Context(), f.email)
 	if err == nil || !p.DeletionSubmitted() || p.DeletionAccepted() || f.writes.Load() != 0 {
 		t.Fatal("uncertain submission treated as accepted")
@@ -138,7 +142,7 @@ func TestProDeletionIndependentIntervalAndConfirmedStopsChecks(t *testing.T) {
 	mode := "pending"
 	protocol := deletionProtocolFixture(t, &posts, &mode)
 	calls := 0
-	f.s.proDeleteHooks = &proDeactivationHooks{Protocol: func(ctx context.Context, input map[string]any, call func(string, map[string]any) (any, error)) (map[string]any, error) {
+	f.s.proDeleteHooks = &proDeactivationHooks{Login: deletionLoginFixture, Protocol: func(ctx context.Context, input map[string]any, call func(string, map[string]any) (any, error)) (map[string]any, error) {
 		calls++
 		// Simulate editing the interval while an upstream request is running.
 		cfg, _, _, _ := f.s.store.ProSettings()
@@ -199,8 +203,8 @@ func TestProDeletionLoginDoesNotReplaceOAuth(t *testing.T) {
 	f.s.proDeleteHooks = &proDeactivationHooks{
 		Protocol: func(ctx context.Context, p map[string]any, call func(string, map[string]any) (any, error)) (map[string]any, error) {
 			attempts++
-			if attempts == 1 {
-				return map[string]any{"status": "need_login"}, nil
+			if logins != 1 {
+				t.Fatal("deletion protocol ran before fresh login")
 			}
 			if p["session"].(map[string]any)["access_token"] != "web-token" {
 				t.Fatal("new web session not used")
@@ -216,8 +220,77 @@ func TestProDeletionLoginDoesNotReplaceOAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, c, err := f.s.store.MailAccountCredential(f.email)
-	if err != nil || c.AccessToken != "child-token" || c.RefreshToken != "child-rt" || logins != 1 || posts.Load() != 1 {
+	if err != nil || c.AccessToken != "child-token" || c.RefreshToken != "child-rt" || logins != 1 || attempts != 1 || posts.Load() != 1 {
 		t.Fatal("deletion login replaced OAuth credentials")
+	}
+}
+
+func TestProDeletionFreshLoginFailureStopsBeforeProtocol(t *testing.T) {
+	for _, mode := range []string{"error", "failed", "missing_token"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newProExecutionFixture(t)
+			enableDeletion(t, f)
+			f.s.proDeleteHooks = &proDeactivationHooks{
+				Login: func(context.Context, string) (map[string]any, error) {
+					if mode == "error" {
+						return nil, errors.New("login unavailable")
+					}
+					return map[string]any{"success": mode == "missing_token"}, nil
+				},
+				Protocol: func(context.Context, map[string]any, func(string, map[string]any) (any, error)) (map[string]any, error) {
+					t.Fatal("login failure reused old credentials")
+					return nil, nil
+				},
+			}
+			p, err := f.s.performProDeactivation(t.Context(), f.email)
+			if err == nil || p.DeletionSubmitted() || p.ProDeactivation.Steps["credentials"] != "failed" {
+				t.Fatal("login failure did not stop before submission", err)
+			}
+		})
+	}
+}
+
+func TestProDeletionConfirmationContinuesWhileGroupingFails(t *testing.T) {
+	f := newProGroupFixture(t)
+	enableDeletion(t, f.proExecutionFixture)
+	now := time.Now().Add(-time.Minute)
+	_, err := f.s.store.UpdateProAccount(f.email, func(p *model.MailAccountProfile) {
+		p.ProDeactivation = &model.ProDeactivation{Status: "queued", SubmittedAt: &now, AcceptedAt: &now, AccountID: "personal", Steps: map[string]string{"submit": "completed", "confirm": "waiting"}}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, _, _ := f.s.store.ProSettings()
+	p, _, _ := f.s.store.MailAccountCredential(f.email)
+	if _, err = f.s.prepareProPostMergeGroups(p, cfg); err != nil {
+		t.Fatal(err)
+	}
+	f.fail.Store(true)
+	checks := 0
+	f.s.proDeleteHooks = &proDeactivationHooks{
+		Login: func(context.Context, string) (map[string]any, error) {
+			t.Fatal("confirmation logged in again")
+			return nil, nil
+		},
+		Protocol: func(_ context.Context, input map[string]any, _ func(string, map[string]any) (any, error)) (map[string]any, error) {
+			checks++
+			if input["check_only"] != true {
+				t.Fatal("confirmation resubmitted deletion")
+			}
+			return map[string]any{"status": "confirmed", "confirmation_source": "http_401", "message": "HTTP 401"}, nil
+		},
+	}
+	p, err = f.s.performProDeactivation(t.Context(), f.email)
+	if err == nil || !p.DeletionConfirmed() || p.ProDeactivation.ConfirmationSource != "http_401" || p.ProDeactivation.Steps["confirm"] != "completed" || !p.ProPostMergeGroupsPending() {
+		t.Fatal("grouping failure blocked confirmation", err, p.ProDeactivation)
+	}
+	if _, err = f.s.performProDeactivation(t.Context(), f.email); err == nil || checks != 1 {
+		t.Fatal("confirmed deletion queried again", err, checks)
+	}
+	f.fail.Store(false)
+	p, err = f.s.performProDeactivation(t.Context(), f.email)
+	if err != nil || checks != 1 || p.ProDeactivation.NextCheckAt != nil {
+		t.Fatal("cleanup did not finish independently", err)
 	}
 }
 
@@ -228,7 +301,7 @@ func TestProDeletionQuotaRoutesAndThreshold(t *testing.T) {
 			enableDeletion(t, f)
 			var posts atomic.Int32
 			mode := "pending"
-			f.s.proDeleteHooks = &proDeactivationHooks{Protocol: deletionProtocolFixture(t, &posts, &mode)}
+			f.s.proDeleteHooks = &proDeactivationHooks{Login: deletionLoginFixture, Protocol: deletionProtocolFixture(t, &posts, &mode)}
 			remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/api/v1/auth/login":
@@ -270,7 +343,7 @@ func TestProDeletionTimeoutAndQuality(t *testing.T) {
 		enableDeletion(t, f)
 		var posts atomic.Int32
 		mode := "pending"
-		f.s.proDeleteHooks = &proDeactivationHooks{Protocol: deletionProtocolFixture(t, &posts, &mode)}
+		f.s.proDeleteHooks = &proDeactivationHooks{Login: deletionLoginFixture, Protocol: deletionProtocolFixture(t, &posts, &mode)}
 		_, err := f.s.store.UpdateProAccount(f.email, func(p *model.MailAccountProfile) {
 			at := time.Now().Add(-2 * time.Hour)
 			yes := true
@@ -293,7 +366,7 @@ func TestProDeletionTimeoutAndQuality(t *testing.T) {
 		enableDeletion(t, f.proExecutionFixture)
 		var posts atomic.Int32
 		mode := "pending"
-		f.s.proDeleteHooks = &proDeactivationHooks{Protocol: deletionProtocolFixture(t, &posts, &mode)}
+		f.s.proDeleteHooks = &proDeactivationHooks{Login: deletionLoginFixture, Protocol: deletionProtocolFixture(t, &posts, &mode)}
 		f.run(t)
 		f.waitMerge(t)
 		if posts.Load() != 1 || len(f.calls) != 0 {
@@ -309,7 +382,7 @@ func TestProDeletionFullAutoAndDailyTail(t *testing.T) {
 			enableDeletion(t, f)
 			var posts atomic.Int32
 			mode := "pending"
-			f.s.proDeleteHooks = &proDeactivationHooks{Protocol: deletionProtocolFixture(t, &posts, &mode)}
+			f.s.proDeleteHooks = &proDeactivationHooks{Login: deletionLoginFixture, Protocol: deletionProtocolFixture(t, &posts, &mode)}
 			enableEJHPaymentFixture(t, f.s.store)
 			card, err := f.s.store.ImportEJHCard(ejh.Card{OrderNo: "delete-tail", Number: "4242424242424242", Validity: "1299", CVV: "012", Status: "1", CardCurrency: "USD"}, true)
 			if err != nil {
@@ -404,7 +477,7 @@ func TestProDeletionManualResumeAndOppositeAction(t *testing.T) {
 			enableDeletion(t, f)
 			var posts atomic.Int32
 			mode := "pending"
-			f.s.proDeleteHooks = &proDeactivationHooks{Protocol: deletionProtocolFixture(t, &posts, &mode)}
+			f.s.proDeleteHooks = &proDeactivationHooks{Login: deletionLoginFixture, Protocol: deletionProtocolFixture(t, &posts, &mode)}
 			if _, err := f.s.store.UpdateProAccount(f.email, func(p *model.MailAccountProfile) {
 				switch history {
 				case "stopped":

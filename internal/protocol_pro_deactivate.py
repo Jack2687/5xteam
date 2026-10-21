@@ -89,6 +89,11 @@ def run(payload, call=rpc, session=None, make_sentinel=sentinel):
                 raise RuntimeError('登录用户 ID 与原账号不一致，未提交删除')
         response = session.get(BASE + ACCOUNTS, headers=auth, timeout=45, allow_redirects=False)
         if response.status_code != 200:
+            # Operator-defined completion rule, restricted to reconciliation
+            # of a submitted deletion. A pre-submit 401 still means login failed.
+            if checking and payload.get('account_id') and response.status_code == 401:
+                return {'status': 'confirmed', 'confirmation_source': 'http_401',
+                        'message': '核验返回 HTTP 401，按规则确认删除成功'}
             if response.status_code == 401 and not checking:
                 return {'status': 'need_login', 'message': '登录凭据已失效'}
             return {'status': 'pending' if checking else 'failed', 'message': request_error(response) + ('；不能据此确认删除' if checking else '')}

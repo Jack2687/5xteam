@@ -293,17 +293,22 @@ func TestProDeletionCompleteAutomation(t *testing.T) {
 				before := reads.Load()
 				failGroups.Store(false)
 				p = advance()
-				if reads.Load() != before || p.ProPostMergeGroupsPending() {
-					t.Fatal("group retry should only finish grouping")
+				if reads.Load() <= before || p.ProPostMergeGroupsPending() {
+					t.Fatal("group retry should also check deletion confirmation")
 				}
 			}
 			p = advance()
-			if p.DeletionConfirmed() || p.ProAuto.Status != "awaiting_deletion" {
-				t.Fatal("pending/401 incorrectly completed deletion")
+			if scenario == "confirmation_401" {
+				if !p.DeletionConfirmed() || p.ProDeactivation.ConfirmationSource != "http_401" {
+					t.Fatal("401 did not confirm submitted deletion")
+				}
+			} else {
+				if p.DeletionConfirmed() || p.ProAuto.Status != "awaiting_deletion" {
+					t.Fatal("pending incorrectly completed deletion")
+				}
+				confirmed.Store(true)
+				p = advance()
 			}
-			confirmed.Store(true)
-			confirmUnauthorized.Store(false)
-			p = advance()
 			if !p.DeletionConfirmed() || p.ProAuto.Status != "completed" || p.ProDeactivation.NextCheckAt != nil || p.ProPostMergeGroupsPending() {
 				t.Fatalf("chain did not finish: %+v %+v", p.ProAuto, p.ProDeactivation)
 			}
@@ -337,8 +342,8 @@ func TestProDeletionCompleteAutomation(t *testing.T) {
 			if err != nil || credential.AccessToken != proAutoToken(email, "after") || credential.RefreshToken != "after-rt" {
 				t.Fatal("deletion corrupted provisioned OAuth")
 			}
-			if scenario == "refresh_login" && refreshes.Load() != 1 {
-				t.Fatal("expired web session not renewed once")
+			if refreshes.Load() != wantPosts {
+				t.Fatal("each new deletion must log in once; checks must not log in", refreshes.Load(), wantPosts)
 			}
 			rec := payCall(t, s.startProAutomation, "email", email, map[string]any{"retry_current": true})
 			if rec.Code != 409 {
