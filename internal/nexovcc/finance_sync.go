@@ -107,7 +107,7 @@ func (f Finance) CardSyncedAt(serial string) time.Time {
 }
 
 // Deleted alone is insufficient: require the issuance debit, final principal
-// return (or proven zero balance), and actual full refunds for every payment.
+// return (or proven zero balance), and completed, attributed refunds for every payment.
 // A manual expense classification cannot turn an outstanding payment into a refund.
 func ClosedFinanceComplete(card Card, f Finance, groups []TradeGroup, zeroBalanceClosed bool) bool {
 	if card.Status != "4" || f.CardSyncedAt(card.Serial).IsZero() {

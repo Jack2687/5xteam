@@ -20,6 +20,7 @@ export function caseDetails(row, finance = {}) {
  const fee = kinds => feesReady ? funds.filter(f=>kinds.includes(f.kind)).reduce((s,f)=>s-cents(f.amount),0) : null
  const originalPayments = trades.some(t=>t.status==='COMPLETE') ? trades.filter(t=>t.status==='COMPLETE') : trades.filter(t=>t.status==='PENDING')
  const originalReturns = trades.filter(t=>['REVERSED','REFUNDED'].includes(t.status))
+ const refundCompleted = !!group?.fully_returned && originalReturns.some(t=>t.status==='REFUNDED')
  const original = rows => {
   const byCurrency = new Map()
   for(const t of rows){
@@ -37,7 +38,7 @@ export function caseDetails(row, finance = {}) {
   cardLoss:group?.valid ? group.fully_returned ? amounts.difference : 0 : null,
   settlement:group?.valid ? group.settled && !group.fully_returned ? amounts.difference : 0 : null,
   pending:group?.valid ? amounts.closed ? 0 : Math.max(0,amounts.difference) : null,
-  returnedAt:validTime(group?.returned_at) ? group.returned_at : '',
+  returnedAt:validTime(group?.returned_at) ? group.returned_at : '',refundCompleted,
   provisional:!amounts.closed,
   manualUnconfirmed:row.state==='returned' && (!group?.valid || !group.fully_returned),
  }

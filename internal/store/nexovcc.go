@@ -221,9 +221,27 @@ func (s *Store) SaveNexovccCard(c nexovcc.Card, private *nexovcc.PrivateCard) (n
 		if c.Balance == "" {
 			c.Balance, c.BalanceAt = old.Balance, old.BalanceAt
 		}
+		if c.Status == "4" && old.Status == "4" {
+			c.ClosedAt = old.ClosedAt
+		}
 	}
 	if c.Status == "4" {
 		c.NormalPending, c.NormalPendingAt = false, nil
+		if c.ClosedAt.IsZero() {
+			var closedAt string
+			if e = tx.QueryRow(`SELECT coalesce(max(json_extract(profile,'$.updated_at')),'') FROM nexovcc_operations WHERE scope=? AND json_extract(profile,'$.action') IN ('cancel','withdraw_cancel') AND status='succeeded'`, "card:"+c.ID).Scan(&closedAt); e != nil {
+				return c, e
+			}
+			if closedAt != "" {
+				c.ClosedAt, _ = time.Parse(time.RFC3339Nano, closedAt)
+			}
+			if c.ClosedAt.IsZero() {
+				c.ClosedAt = c.SyncedAt
+				if c.ClosedAt.IsZero() {
+					c.ClosedAt = time.Now()
+				}
+			}
+		}
 	}
 	// An import time is not falsely presented as the supplier's opening time.
 	key := oldKey.String

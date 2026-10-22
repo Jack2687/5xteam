@@ -82,6 +82,7 @@ type Card struct {
 	ControlAt       time.Time  `json:"control_at,omitempty"`
 	NormalPending   bool       `json:"normal_pending,omitempty"`
 	NormalPendingAt *time.Time `json:"normal_pending_at,omitempty"`
+	ClosedAt        time.Time  `json:"closed_at,omitempty"`
 }
 type PrivateCard struct {
 	Number      string

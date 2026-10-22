@@ -60,6 +60,25 @@ func TestNexovccCardCategorySurvivesSyncAndRestart(t *testing.T) {
 	}
 }
 
+func TestNexovccClosedAtIsRecordedOnceAndSurvivesSync(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c := nexStoreCard(t, s)
+	closedAt := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	c, err = s.SaveNexovccCard(nexovcc.Card{Serial: c.Serial, Status: "4", SyncedAt: closedAt}, nil)
+	if err != nil || !c.ClosedAt.Equal(closedAt) {
+		t.Fatal("closed status timestamp was not captured", c.ClosedAt, err)
+	}
+	laterSync := closedAt.Add(time.Hour)
+	c, err = s.SaveNexovccCard(nexovcc.Card{Serial: c.Serial, Status: "4", SyncedAt: laterSync}, nil)
+	if err != nil || !c.ClosedAt.Equal(closedAt) {
+		t.Fatal("later card sync changed the closed status timestamp", c.ClosedAt, err)
+	}
+}
+
 func TestNexovccPendingCategoryBlocksAutomaticWithdrawalAdmission(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {

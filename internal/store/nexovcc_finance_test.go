@@ -178,3 +178,53 @@ func TestNexovccResidualSettlementPreservesReturnedAccount(t *testing.T) {
 		t.Fatal(after, err)
 	}
 }
+
+func TestNexovccCrossAuthorizationRefundMarksCaseReturnedAndKeepsCosts(t *testing.T) {
+	s := transferStore(t)
+	c := nexStoreCard(t, s)
+	local, secret, err := s.GPTPayCard(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := 5
+	local.MaxAccounts = &limit
+	if _, err = s.SaveGPTPayCard(local, secret); err != nil {
+		t.Fatal(err)
+	}
+	email := "refund-4276@example.com"
+	transferSource(t, s, email)
+	o := transferOrder(email, "refund-4276-order", "success")
+	o.Order.CardID = c.ID
+	o.Order.CreatedAt = time.Now().Add(-time.Hour)
+	o.Order.Remote.PaymentCurrency = "USD"
+	o.Order.Remote.PaymentAmount = "141.82"
+	if err = s.CreateGPTPayOrder(o.Order, o.Snapshot); err != nil {
+		t.Fatal(err)
+	}
+	at := o.Order.CreatedAt.Add(time.Minute)
+	f := nexovcc.Finance{At: time.Now(), Trades: []nexovcc.Trade{
+		{ID: "payment-4276", Serial: c.Serial, Authorization: "UX0VKI", Currency: "USD", Amount: "141.82", MerchantAmount: "8919.64", MerchantCurrency: "PHP", Merchant: "OPENAI*CHATGPTSUBSCR", Status: "COMPLETE", At: at},
+		{ID: "refund-4276", Serial: c.Serial, Authorization: "3JWWV3", Currency: "USD", Amount: "141.23", MerchantAmount: "8898.46", MerchantCurrency: "PHP", Merchant: "OPENAI*CHATGPTSUBSCR", Status: "REFUNDED", At: at.Add(42 * time.Minute)},
+	}, Funds: []nexovcc.Fund{
+		{ID: "payment-fee", Serial: c.Serial, Link: "payment-4276", Currency: "USD", Kind: 2007, Amount: "-2.42"},
+		{ID: "refund-fee", Serial: c.Serial, Link: "refund-4276", Currency: "USD", Kind: 8888, Amount: "-4.74"},
+	}}
+	if err = s.SaveNexovccFinance(f); err != nil {
+		t.Fatal(err)
+	}
+	cases, err := s.NexovccCases()
+	if err != nil || len(cases) != 1 || cases[0].State != "returned" || cases[0].Match == nil || !cases[0].Match.Group.FullyReturned {
+		t.Fatalf("a completed unique refund must release the Pro payment: %+v (%v)", cases, err)
+	}
+	g := cases[0].Match.Group
+	if g.Authorization != "UX0VKI" || g.Payment != "141.82" || g.Returned != "141.23" || g.Difference != "0.59" || g.Fees != "7.16" || g.Cost != "7.75" || len(g.TradeIDs) != 2 {
+		t.Fatalf("refund principal difference or fees were lost: %+v", g)
+	}
+	var returned bool
+	if err = s.db.QueryRow(`SELECT returned FROM nexovcc_case_matches WHERE order_id=?`, o.Order.ID).Scan(&returned); err != nil || !returned {
+		t.Fatalf("persisted match did not permit later withdrawal/recycle checks: returned=%v err=%v", returned, err)
+	}
+	if err = s.ReserveProCard("next-refund@example.com", c.ID, false); err != nil {
+		t.Fatalf("confirmed refund did not release the card: %v", err)
+	}
+}

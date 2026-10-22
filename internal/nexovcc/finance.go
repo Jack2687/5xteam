@@ -390,7 +390,120 @@ func IsFee(kind int) bool {
 }
 func OpeningFee(kind int) bool { return kind == 3003 || kind == 5001 }
 func ServiceFee(kind int) bool { return kind == 3004 || kind == 3005 }
+
+func tradeBucketKey(t Trade) string {
+	key := t.Serial + "|" + t.Authorization
+	if t.Authorization == "" {
+		key += "|" + t.ID
+	}
+	return key
+}
+
+func normalizedMerchant(value string) string {
+	return strings.Join(strings.Fields(strings.ToUpper(value)), " ")
+}
+
+func standaloneRefund(rows []Trade) (Trade, bool) {
+	if len(rows) != 1 {
+		return Trade{}, false
+	}
+	refund := rows[0]
+	amount, err := Cents(refund.Amount)
+	return refund, err == nil && amount > 0 && refund.Status == "REFUNDED" && refund.Currency == "USD" &&
+		refund.Authorization != "" && refund.Serial != "" && !refund.At.IsZero()
+}
+
+func standalonePayment(rows []Trade) (Trade, int64, bool) {
+	if len(rows) < 1 || len(rows) > 2 {
+		return Trade{}, 0, false
+	}
+	payment := rows[0]
+	if len(rows) == 2 {
+		pending, settled := rows[0], rows[1]
+		if pending.Status == "COMPLETE" {
+			pending, settled = settled, pending
+		}
+		if pending.Status != "PENDING" || settled.Status != "COMPLETE" ||
+			pending.Serial != settled.Serial || pending.Authorization != settled.Authorization ||
+			pending.Currency != settled.Currency || pending.MerchantCurrency != settled.MerchantCurrency ||
+			normalizedMerchant(pending.Merchant) != normalizedMerchant(settled.Merchant) ||
+			pending.At.IsZero() || settled.At.Before(pending.At) {
+			return Trade{}, 0, false
+		}
+		// Authorization and settlement describe one payment, not two purchases.
+		payment = settled
+	}
+	amount, err := Cents(payment.Amount)
+	if err != nil || amount <= 0 || payment.Currency != "USD" || (payment.Status != "PENDING" && payment.Status != "COMPLETE") ||
+		payment.Authorization == "" || payment.Serial == "" || payment.At.IsZero() {
+		return Trade{}, 0, false
+	}
+	return payment, amount, true
+}
+
+// Unique completed refunds may use a separate authorization. Keep the supplier
+// ledger intact, and only merge a refund when one earlier same-card payment has
+// the same merchant/currencies and enough unreturned principal.
+func mergeCrossAuthorizationRefunds(buckets map[string][]Trade) map[string]bool {
+	keys := make([]string, 0, len(buckets))
+	for key := range buckets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	proposed := map[string]string{}
+	targetClaims := map[string]int{}
+	for _, sourceKey := range keys {
+		refund, ok := standaloneRefund(buckets[sourceKey])
+		if !ok || normalizedMerchant(refund.Merchant) == "" || refund.MerchantCurrency == "" {
+			continue
+		}
+		refundAmount, err := Cents(refund.Amount)
+		if err != nil {
+			continue
+		}
+		refundMerchantAmount, merchantErr := Cents(refund.MerchantAmount)
+		if merchantErr != nil || refundMerchantAmount <= 0 {
+			continue
+		}
+		candidates := []string{}
+		for _, targetKey := range keys {
+			if sourceKey == targetKey {
+				continue
+			}
+			payment, paid, ok := standalonePayment(buckets[targetKey])
+			if !ok || payment.Serial != refund.Serial || !payment.At.Before(refund.At) ||
+				payment.Currency != refund.Currency || payment.MerchantCurrency != refund.MerchantCurrency ||
+				normalizedMerchant(payment.Merchant) != normalizedMerchant(refund.Merchant) {
+				continue
+			}
+			paidMerchant, err := Cents(payment.MerchantAmount)
+			if err != nil || paidMerchant <= 0 || refundAmount > paid || refundMerchantAmount > paidMerchant {
+				continue
+			}
+			candidates = append(candidates, targetKey)
+		}
+		if len(candidates) == 1 {
+			proposed[sourceKey] = candidates[0]
+			targetClaims[candidates[0]]++
+		}
+	}
+	completed := map[string]bool{}
+	for source, target := range proposed {
+		if targetClaims[target] != 1 {
+			continue
+		}
+		buckets[target] = append(buckets[target], buckets[source]...)
+		delete(buckets, source)
+		completed[target] = true
+	}
+	return completed
+}
+
 func Groups(f Finance) []TradeGroup {
+	return groupsWithCompletedRefunds(f, nil)
+}
+
+func groupsWithCompletedRefunds(f Finance, manualRefunds map[string]bool) []TradeGroup {
 	buckets := map[string][]Trade{}
 	feesByTrade := map[string][]Fund{}
 	for _, fee := range f.Funds {
@@ -400,12 +513,10 @@ func Groups(f Finance) []TradeGroup {
 		}
 	}
 	for _, t := range f.Trades {
-		key := t.Serial + "|" + t.Authorization
-		if t.Authorization == "" {
-			key += "|" + t.ID
-		}
+		key := tradeBucketKey(t)
 		buckets[key] = append(buckets[key], t)
 	}
+	autoRefunds := mergeCrossAuthorizationRefunds(buckets)
 	// A reversal can produce a separate zero-dollar authorization with its own
 	// transaction fee. Attribute fees only when the same-card return at the exact
 	// timestamp is unique; keep both original transaction records unchanged.
@@ -556,6 +667,9 @@ func Groups(f Finance) []TradeGroup {
 			}
 		}
 		g.FullyReturned = paid > 0 && returned > 0 && ((fullReturnEvidence && merchantPaid > 0 && merchantPaid == merchantReturned) || returned == paid)
+		// A uniquely linked REFUNDED event confirms the refund flow completed;
+		// any amount the issuer did not return remains visible as card loss.
+		g.FullyReturned = g.FullyReturned || autoRefunds[key] || manualRefunds[g.ID]
 		if returned > 0 && paid == 0 {
 			g.Valid = false
 			g.Problem = "缺少原付款记录"
