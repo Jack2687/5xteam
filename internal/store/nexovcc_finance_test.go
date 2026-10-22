@@ -1,12 +1,108 @@
 package store
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
 	"chatgpt-space-merge/internal/model"
 	"chatgpt-space-merge/internal/nexovcc"
 )
+
+func TestNexovccReopenRebuildsHistoricalRefundMatches(t *testing.T) {
+	for _, category := range []string{"normal", "normal_pending", "closed-manual-returned"} {
+		t.Run(category, func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { s.Close() }()
+			card := nexStoreCard(t, s)
+			raw, err := os.ReadFile("../nexovcc/testdata/refund-descriptors.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var f nexovcc.Finance
+			if err = json.Unmarshal(raw, &f); err != nil {
+				t.Fatal(err)
+			}
+			for i := range f.Trades {
+				f.Trades[i].Serial = card.Serial
+			}
+			for i := range f.Funds {
+				f.Funds[i].Serial = card.Serial
+			}
+			email := "historical-refund@example.com"
+			transferSource(t, s, email)
+			o := transferOrder(email, "historical-refund", "success")
+			o.Order.CardID, o.Order.CreatedAt = card.ID, f.Trades[3].At
+			o.Order.Remote.PaymentCurrency, o.Order.Remote.PaymentAmount = "USD", "141.82"
+			if err = s.CreateGPTPayOrder(o.Order, o.Snapshot); err != nil {
+				t.Fatal(err)
+			}
+			before := f
+			before.Trades = f.Trades[1:]
+			if err = s.SaveNexovccFinance(before); err != nil {
+				t.Fatal(err)
+			}
+			// Reproduce an old parser's cached match alongside the complete issuer
+			// evidence. Reopening must repair it without an upstream refresh.
+			fullRaw := mustJSON(f)
+			if err = s.NexovccCache("finance", f); err != nil {
+				t.Fatal(err)
+			}
+			if category == "normal_pending" {
+				if _, err = s.SetNexovccCardNormalPending(card.ID, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if category == "closed-manual-returned" {
+				card.Status = "4"
+				if _, err = s.SaveNexovccCard(card, nil); err != nil {
+					t.Fatal(err)
+				}
+				if err = s.SetNexovccCase(o.Order.ID, "returned", "upstream refund confirmed manually", 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var oldReturned bool
+			if err = s.db.QueryRow(`SELECT returned FROM nexovcc_case_matches WHERE order_id=?`, o.Order.ID).Scan(&oldReturned); err != nil || oldReturned {
+				t.Fatal("fixture must have stale persisted match", oldReturned, err)
+			}
+			if err = s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s, err = Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cases, err := s.NexovccCases()
+			if err != nil || len(cases) != 1 || cases[0].State != "returned" || cases[0].Match == nil {
+				t.Fatal(cases, err)
+			}
+			g := cases[0].Match.Group
+			if !g.Valid || !g.FullyReturned || g.Returned != "141.23" || g.Cost != "7.75" || g.ReturnedAt.IsZero() {
+				t.Fatalf("history not recalculated: %+v", g)
+			}
+			var persisted bool
+			var cached string
+			if err = s.db.QueryRow(`SELECT returned FROM nexovcc_case_matches WHERE order_id=?`, o.Order.ID).Scan(&persisted); err != nil || !persisted {
+				t.Fatal("admission flag remains stale", persisted, err)
+			}
+			if err = s.db.QueryRow(`SELECT profile FROM nexovcc_cache WHERE kind='finance'`).Scan(&cached); err != nil || cached != fullRaw {
+				t.Fatal("reconciliation changed issuer evidence or sync timestamps", err)
+			}
+			if category == "closed-manual-returned" && (cases[0].ManualState != "returned" || cases[0].Reason != "upstream refund confirmed manually") {
+				t.Fatal("manual history changed", cases[0])
+			}
+			if err = s.reconcileNexovccFinance(); err != nil {
+				t.Fatal("repeated reconciliation", err)
+			}
+		})
+	}
+}
 
 func TestNexovccCasePresentationMetadata(t *testing.T) {
 	s := transferStore(t)

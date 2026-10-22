@@ -102,7 +102,7 @@ function manage(row){detail.value={type:'manage',cardID:row.card.id}}
 function caseTrades({row,options={type:'trades'}}){const serial=data.cards.find(r=>r.card.id===row.card_id)?.card.serial_no||row.match?.group?.serial_no;if(!serial){show('卡片资料未同步，无法定位流水','error');return}ledger.value={...options,serial,group:options.scope==='card'?null:row.match?.group}}
 function manageCase(row){const card=data.cards.find(r=>r.card.id===row.card_id);if(card)manage(card)}
 function editMatch(row){dialog.value={type:'match',row,group_id:row.match?.group?.id||'',reason:'',confirm:false}}
-function matchOptions(row){const serial=data.cards.find(r=>r.card.id===row.card_id)?.card.serial_no;return data.groups.filter(g=>!g.non_pro&&g.valid&&Number(g.payment)>0&&g.serial_no===serial&&!data.cases.some(c=>c.id!==row.id&&c.match?.group?.id===g.id))}
+function matchOptions(row){const serial=data.cards.find(r=>r.card.id===row.card_id)?.card.serial_no;return data.groups.filter(g=>!g.non_pro&&!g.related_group_id&&g.valid&&Number(g.payment)>0&&g.serial_no===serial&&!data.cases.some(c=>c.id!==row.id&&c.match?.group?.id===g.id))}
 function selectPage(){const ids=visible.value.filter(r=>!cancelReason(r,data.operations)).map(r=>r.card.id);selection.value=ids.every(id=>selection.value.includes(id))?selection.value.filter(id=>!ids.includes(id)):[...new Set([...selection.value,...ids])]}
 function batchAction(action){dialog.value={type:'batch',action,ids:[...selection.value],confirm:false}}
 async function load(){const result=await api('/api/nexovcc/dashboard');if(!disposed){Object.assign(data,result);if(result.control)apiPaused.value=result.control.paused===true}}

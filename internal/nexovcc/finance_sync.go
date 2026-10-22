@@ -146,7 +146,7 @@ func ClosedFinanceComplete(card Card, f Finance, groups []TradeGroup, zeroBalanc
 		if g.Serial != card.Serial {
 			continue
 		}
-		if !g.Valid || g.OtherExpense != nil || (g.Payment != "0.00" && !g.FullyReturned) {
+		if !g.Valid || g.OtherExpense != nil || (g.Payment != "0.00" && !g.ReturnResolved()) {
 			return false
 		}
 		n, err := SignedCents(g.Difference)

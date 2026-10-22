@@ -36,7 +36,7 @@ const at=v=>v&&!v.startsWith('0001')&&Number.isFinite(Date.parse(v))?formatTime(
   <small v-if="row.revenue_note" class="note">{{row.revenue_note}}</small>
   <details><summary>查看流水与匹配依据 <span>{{row.match?(row.match.method==='auto'?'自动匹配':'人工关联'):'待匹配'}}</span></summary>
    <div class="evidence"><p>授权码：{{row.match?.group?.authorization||'—'}}<br>匹配依据：{{row.match?.evidence||'尚无匹配记录，可核实后关联同卡流水。'}}</p><p v-if="row.manual_state">人工状态依据：{{row.reason||'—'}}</p><p v-if="row.match&&!value.feesReady" class="warning">费用明细待同步核实，未将缺失金额当成零。</p>
-    <div v-for="trade in value.trades" :key="trade.id" class="trade-line"><span>{{tradeStates[trade.status]||trade.status}} · {{at(trade.at)}}<small>{{trade.id}} · 授权码 {{trade.authorization||'—'}}</small></span><strong>{{trade.amount}} {{trade.currency}}<small>{{trade.merchant_amount}} {{trade.merchant_currency}}</small></strong></div>
+    <div v-for="trade in [...value.trades,...value.relatedTrades]" :key="trade.id" class="trade-line"><span>{{tradeStates[trade.status]||trade.status}} · {{at(trade.at)}}<small>{{trade.id}} · 授权码 {{trade.authorization||'—'}}</small></span><strong>{{trade.amount}} {{trade.currency}}<small>{{trade.merchant_amount}} {{trade.merchant_currency}}</small></strong></div>
     <div class="links"><button @click="$emit('details',{row,options:{type:'trades'}})">交易明细</button><button :disabled="!row.match" @click="$emit('details',{row,options:{type:'funds'}})">费用明细</button><button :disabled="running||row.payment_status!=='success'" @click="$emit('match',row)">关联流水</button></div>
    </div>
   </details>
